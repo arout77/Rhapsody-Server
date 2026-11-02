@@ -1,6 +1,6 @@
 # Rhapsody Server
 
-> A modern local development stack for PHP — with built-in profiling, AI-agent integration, and first-class support for the [Rhapsody framework](https://rhapsodyframework.com).
+> Local development stack for PHP - evolved. With built-in profiling, AI-agent integration, and first-class support for the [Rhapsody framework](https://rhapsodyframework.com). Rhapsody Server is a drop-in alternative to XAMPP / WAMP built for developers who want more than "Apache + MySQL + PHP in a folder.".
 > #### Note: This software is currently in Alpha stage of development - expect bugs. Do not rely on it for mission-critical work. A stable, release candidate expected to arrive by 11/2026.
 
 **Rhapsody Server** is a drop-in alternative to XAMPP / WAMP built for developers who want more than "Apache + MySQL + PHP in a folder." It ships with observability, AI-agent tooling, and a scaffolded Rhapsody framework workflow out of the box.
