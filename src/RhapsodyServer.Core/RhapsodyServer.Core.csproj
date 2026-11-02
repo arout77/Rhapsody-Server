@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Web\index.html" LogicalName="index.html" />
+    <EmbeddedResource Include="Web\assets\logo.png" LogicalName="assets/logo.png" />
+    <EmbeddedResource Include="Web\assets\icon.png" LogicalName="assets/icon.png" />
+  </ItemGroup>
+</Project>

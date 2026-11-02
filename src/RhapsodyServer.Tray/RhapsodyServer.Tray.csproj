@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>RhapsodyServer</AssemblyName>
+    <RootNamespace>RhapsodyServer.Tray</RootNamespace>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- Startup speed: precompiled code, quick JIT for whatever is left. -->
+    <TieredPGO>false</TieredPGO>
+    <TieredCompilation>true</TieredCompilation>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\splash.jpg" LogicalName="splash.jpg" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\RhapsodyServer.Core\RhapsodyServer.Core.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,730 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Rhapsody Server</title>
+<link rel="icon" type="image/png" href="/assets/icon.png">
+<style nonce="__NONCE__">
+:root {
+  color-scheme: light dark;
+  --bg: light-dark(#e8ecf3, #121822);
+  --panel: light-dark(#f7f9fc, #1a2230);
+  --raised: light-dark(#ffffff, #222c3d);
+  --ink: light-dark(#171f2c, #e6eaf2);
+  --muted: light-dark(#566176, #9aa6ba);
+  --line: light-dark(#cdd5e1, #2c3749);
+  --accent: light-dark(oklch(48% 0.2 268), oklch(78% 0.12 268));
+  --accent-ink: light-dark(#ffffff, oklch(22% 0.06 268));
+  --ok: light-dark(oklch(58% 0.15 150), oklch(76% 0.17 150));
+  --warn: light-dark(oklch(72% 0.15 75), oklch(80% 0.14 85));
+  --bad: light-dark(oklch(52% 0.2 25), oklch(72% 0.17 25));
+  --off: light-dark(#a8b2c3, #46516a);
+  --mono: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+  accent-color: var(--accent);
+  scrollbar-color: var(--off) transparent;
+  scrollbar-width: thin;
+  font: 15px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); }
+h1 { font: 600 1.45rem/1.2 "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; letter-spacing: -0.015em; margin: 0; }
+h2 { font-size: 1.05rem; margin: 0; }
+p { margin: 0; }
+a { color: var(--accent); }
+.mono { font-family: var(--mono); }
+.muted { color: var(--muted); }
+.small { font-size: .8125rem; }
+
+/* layout */
+.app { display: grid; grid-template-columns: 12.5rem minmax(0, 1fr); grid-template-rows: 1fr auto; min-height: 100dvh; }
+.rail { grid-row: 1 / 2; padding: 1.4rem 1rem; border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; gap: 1.6rem; }
+.brand { display: block; background: #050a1c; border-radius: 8px; padding: .75rem .8rem; }
+.brand img { display: block; width: 100%; height: auto; }
+.rail nav { display: grid; gap: .15rem; }
+.rail nav a { color: var(--muted); text-decoration: none; padding: .5rem .55rem; border-radius: 5px; border-left: 3px solid transparent; }
+.rail nav a:hover { color: var(--ink); background: light-dark(#e9eef6, #222c3d); }
+.rail nav a[aria-current="page"] { color: var(--ink); font-weight: 600; background: light-dark(#e9eef6, #222c3d); border-left-color: var(--accent); }
+main { padding: 1.6rem clamp(1rem, 3vw, 2.4rem) 2rem; min-width: 0; max-width: 62rem; width: 100%; }
+.page-head { display: flex; flex-wrap: wrap; gap: .75rem 1rem; align-items: center; justify-content: space-between; margin-bottom: .35rem; }
+.page-head .actions { display: flex; gap: .5rem; flex-wrap: wrap; }
+.lede { margin: .2rem 0 1.2rem; max-width: 60ch; }
+.activity { grid-column: 1 / -1; display: flex; align-items: center; gap: .6rem; padding: .55rem 1.2rem; border-top: 1px solid var(--line); background: var(--panel); font-size: .875rem; color: var(--muted); min-height: 2.4rem; }
+.activity .dot { width: .55rem; height: .55rem; border-radius: 50%; background: var(--off); flex: none; }
+.activity.working { color: var(--ink); }
+.activity.working .dot { background: var(--accent); }
+@media (prefers-reduced-motion: no-preference) {
+  .activity.working .dot, .lamp.starting { animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+}
+
+/* buttons and controls */
+.btn { font: inherit; font-size: .9rem; padding: .42rem .85rem; border: 1px solid var(--line); border-radius: 5px; background: var(--raised); color: var(--ink); cursor: pointer; }
+.btn:hover:not(:disabled) { border-color: var(--muted); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.btn.quiet { background: transparent; border-color: transparent; color: var(--muted); }
+.btn.quiet:hover:not(:disabled) { color: var(--ink); border-color: var(--line); }
+.btn.danger { color: var(--bad); }
+.btn.sm { padding: .25rem .6rem; font-size: .825rem; }
+:is(.btn, .switch, a, input, select, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.switch { appearance: none; position: relative; width: 2.6rem; height: 1.45rem; border-radius: 99px; border: 1px solid var(--line); background: var(--off); cursor: pointer; padding: 0; flex: none; }
+.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: calc(1.45rem - 6px); height: calc(1.45rem - 6px); border-radius: 50%; background: #fff; transition: transform .15s; }
+.switch[aria-checked="true"] { background: var(--accent); border-color: var(--accent); }
+.switch[aria-checked="true"]::after { transform: translateX(1.15rem); }
+.switch:disabled { opacity: .5; cursor: default; }
+@media (prefers-reduced-motion: reduce) { .switch::after { transition: none; } }
+
+/* services: channel strips */
+.chan { display: grid; grid-template-columns: .5rem minmax(0, 1fr) auto auto; gap: 1rem; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; padding-right: 1rem; }
+.chan + .chan { margin-top: .5rem; }
+.chan .lamp { align-self: stretch; background: var(--off); }
+.lamp.running { background: var(--ok); }
+.lamp.starting { background: var(--warn); }
+.lamp.crashed { background: var(--bad); }
+.chan-main { padding: .7rem 0; min-width: 0; }
+.chan-name { font-weight: 600; display: flex; gap: .6rem; align-items: baseline; flex-wrap: wrap; }
+.chan-name .state { font-weight: 400; font-size: .8125rem; color: var(--muted); }
+.chan-detail { font: .8125rem var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.quick { margin-top: 1.4rem; display: flex; gap: 1.2rem; flex-wrap: wrap; }
+
+/* modules */
+.mods { display: grid; gap: .35rem; margin-top: .9rem; }
+.mod { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .9rem; align-items: center; padding: .5rem .9rem; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.mod[hidden] { display: none; }
+.mod-main { display: flex; flex-wrap: wrap; gap: .1rem .8rem; align-items: baseline; min-width: 0; }
+.mod-name { font-weight: 600; }
+.mod.locked .mod-name::after { content: " \00b7  always on"; font-weight: 400; font-size: .75rem; color: var(--muted); }
+.mod-note { color: var(--muted); font-size: .8125rem; }
+.modbar { position: sticky; bottom: 0; display: flex; gap: .5rem; align-items: center; justify-content: flex-end; flex-wrap: wrap; padding: .7rem 0; margin-top: .6rem; background: var(--bg); border-top: 1px solid var(--line); }
+.modbar .grow { margin-right: auto; }
+.mod-tools { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; margin-top: .9rem; }
+.mod-tools input[type="search"] { flex: 1 1 14rem; }
+
+/* sites */
+.table-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+table { border-collapse: collapse; width: 100%; }
+th { text-align: left; font-weight: 600; font-size: .8125rem; color: var(--muted); padding: .6rem .9rem; border-bottom: 1px solid var(--line); }
+td { padding: .6rem .9rem; border-bottom: 1px solid var(--line); vertical-align: middle; }
+tr:last-child td { border-bottom: 0; }
+td.path { font: .8125rem var(--mono); color: var(--muted); max-width: 22rem; overflow-wrap: anywhere; }
+td.act { text-align: right; white-space: nowrap; }
+.empty { background: var(--panel); border: 1px dashed var(--line); border-radius: 6px; padding: 1.6rem; display: grid; gap: .9rem; justify-items: start; }
+
+/* versions: one dropdown + one button per tool */
+.vpick { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+.vpick select { flex: 1 1 18rem; max-width: 30rem; }
+.installed-line { margin-top: .5rem; }
+
+/* folder picker row */
+.pick { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .4rem; }
+.pick .btn { white-space: nowrap; }
+label .hint.bad { color: var(--bad); }
+.opt { font-weight: 400; color: var(--muted); }
+
+/* versions (legacy rows are gone; kept for the tags) */
+.comp { margin-top: 1.5rem; }
+.comp > p { margin: .15rem 0 .7rem; }
+.ver { min-height: 2.9rem; display: grid; grid-template-columns: 4rem 7.5rem minmax(0, 1fr) auto; gap: .75rem; align-items: center; padding: .55rem .9rem; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.ver + .ver { margin-top: .4rem; }
+.ver .series { font: 600 .95rem var(--mono); }
+.ver .version { font: .8125rem var(--mono); color: var(--muted); }
+.tags { display: flex; gap: .35rem; flex-wrap: wrap; }
+.tag { font-size: .75rem; padding: .05rem .5rem; border: 1px solid var(--line); border-radius: 99px; color: var(--muted); }
+.tag.on { color: var(--ink); border-color: var(--accent); }
+.ver .acts { display: flex; gap: .35rem; justify-content: flex-end; flex-wrap: wrap; }
+
+/* profiler */
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { font: inherit; padding: .3rem .8rem; background: var(--panel); color: var(--muted); border: 0; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { color: var(--ink); font-weight: 600; background: light-dark(#e9eef6, #222c3d); }
+.pf-list { display: grid; gap: .3rem; margin-top: 1rem; }
+.rq { display: grid; grid-template-columns: 3.4rem minmax(0, 1fr) 2.6rem 5rem 7.5rem; gap: .7rem; align-items: center; text-align: left; font: inherit; color: inherit; padding: .5rem .8rem; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+.rq:hover { border-color: var(--accent); }
+.rq[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.rq .m { font: 600 .75rem var(--mono); color: var(--muted); }
+.rq .u { font: .8125rem var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rq .st { font: .8125rem var(--mono); }
+.rq .st.bad { color: var(--bad); }
+.rq .ms { font: .8125rem var(--mono); text-align: right; }
+.rq .sub { font: .75rem var(--mono); color: var(--muted); text-align: right; }
+.bar { grid-column: 2 / -1; height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--accent); }
+.bar i.warn { background: var(--warn); }
+.bar i.bad { background: var(--bad); }
+.pf-detail { margin-top: 1rem; display: grid; gap: .6rem; padding: 1rem; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.pf-detail h2 { font-size: 1rem; overflow-wrap: anywhere; }
+.q { border-top: 1px solid var(--line); padding: .5rem 0; }
+.q summary { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: .7rem; cursor: pointer; align-items: baseline; }
+.q .sql { font: .8125rem var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.q .t { font: .8125rem var(--mono); }
+.q .t.warn { color: var(--warn); }
+.q .t.bad { color: var(--bad); }
+.q .who { font: .75rem var(--mono); color: var(--muted); }
+.q pre { margin: .5rem 0 0; font: .78rem/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; background: var(--raised); border: 1px solid var(--line); border-radius: 5px; padding: .6rem; }
+.q .err { color: var(--bad); font: .8125rem var(--mono); margin-top: .35rem; }
+
+/* notices */
+.notice { display: flex; gap: .8rem; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: .65rem .9rem; border-radius: 6px; border: 1px solid var(--line); border-left-width: 4px; background: var(--panel); margin-bottom: 1rem; }
+.notice.bad { border-left-color: var(--bad); }
+.notice.warn { border-left-color: var(--warn); }
+.notice .btns { display: flex; gap: .4rem; }
+
+/* dialogs */
+dialog { border: 1px solid var(--line); border-radius: 8px; background: var(--raised); color: var(--ink); padding: 0; width: min(30rem, 92vw); }
+dialog::backdrop { background: rgb(8 12 20 / .55); overflow: hidden; overscroll-behavior: contain; }
+dialog:modal { overscroll-behavior: contain; }
+dialog form, dialog .body { padding: 1.25rem; display: grid; gap: .95rem; }
+dialog h2 { font-size: 1.15rem; }
+label { display: grid; gap: .25rem; font-weight: 600; font-size: .875rem; }
+label .hint { font-weight: 400; color: var(--muted); font-size: .8125rem; }
+input, select { font: inherit; padding: .45rem .6rem; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); color: inherit; min-width: 0; }
+td select { padding: .25rem .4rem; }
+.row-end { display: flex; justify-content: flex-end; gap: .5rem; }
+pre.log { margin: 0; max-height: 55vh; overflow: auto; font: .78rem/1.45 var(--mono); background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: .75rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+dialog.wide { width: min(46rem, 94vw); }
+dialog form.contents { display: contents; padding: 0; }
+
+@media (max-width: 760px) {
+  .brand { width: 11rem; flex: none; }
+  .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; }
+  .rail { flex-direction: row; align-items: center; justify-content: space-between; border-right: 0; border-bottom: 1px solid var(--line); padding: .7rem .8rem; gap: .8rem; }
+  .rail nav { display: flex; }
+  .ver { grid-template-columns: 3.5rem minmax(0, 1fr); }
+  .ver .tags, .ver .acts { grid-column: 1 / -1; justify-content: flex-start; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <a class="brand" href="#/services" aria-label="Rhapsody Server"><img src="/assets/logo.png" alt="Rhapsody Server" width="665" height="113"></a>
+    <nav aria-label="Sections">
+      <a href="#/services" data-route="services">Services</a>
+      <a href="#/sites" data-route="sites">Sites</a>
+      <a href="#/versions" data-route="versions">Versions</a>
+      <a href="#/modules" data-route="modules">Modules</a>
+      <a href="#/profiler" data-route="profiler">Profiler</a>
+    </nav>
+  </aside>
+  <main id="view" aria-live="off"></main>
+  <div class="activity" id="activity" role="status" aria-live="polite"><span class="dot"></span><span id="activityText">Connecting…</span></div>
+</div>
+
+<dialog id="dlgRhapsody" aria-labelledby="t1">
+  <form method="dialog" id="fRhapsody">
+    <h2 id="t1">New Rhapsody site</h2>
+    <label>Site name
+      <input name="name" required autofocus autocomplete="off" spellcheck="false" pattern="[a-z0-9]([a-z0-9\-]*[a-z0-9])?" maxlength="42" placeholder="my-app">
+      <span class="hint" id="hintRh">Becomes my-app.test, with its own database, certificate and .env.</span>
+    </label>
+    <label>PHP version <select name="php" data-php></select></label>
+    <div class="row-end">
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" value="create">Create site</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgExisting" aria-labelledby="t2">
+  <form method="dialog" id="fExisting">
+    <h2 id="t2">Add an existing folder</h2>
+    <label>Site name
+      <input name="name" required autofocus autocomplete="off" spellcheck="false" pattern="[a-z0-9]([a-z0-9\-]*[a-z0-9])?" maxlength="42" placeholder="blog">
+      <span class="hint">Becomes <span class="mono">name</span>.test</span>
+    </label>
+    <label>Project folder
+      <span class="pick">
+        <input name="root" id="rootInput" required autocomplete="off" spellcheck="false" placeholder="C:\Users\you\Sites\blog">
+        <button class="btn" type="button" id="btnBrowse" hidden>Browse…</button>
+      </span>
+      <span class="hint bad" id="pickErr" hidden></span>
+      <span class="hint" id="rootHint">The full path on this computer.</span>
+    </label>
+    <label><span>Public folder <span class="opt">(optional)</span></span>
+      <input name="publicDir" autocomplete="off" spellcheck="false" placeholder="Blank = the project folder itself">
+      <span class="hint">Leave blank, or enter /, for Rhapsody and any app whose index.php is in the project folder. To serve a sub-folder instead (Laravel’s <span class="mono">public</span>, say), type its name.</span>
+    </label>
+    <label>PHP version <select name="php" data-php></select></label>
+    <div class="row-end">
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" value="add">Add site</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgConfirm" aria-labelledby="t3">
+  <form method="dialog" id="fConfirm">
+    <h2 id="t3">Are you sure?</h2>
+    <p id="confirmText" class="muted"></p>
+    <div class="row-end">
+      <button class="btn" value="cancel" autofocus>Cancel</button>
+      <button class="btn danger" value="ok" id="confirmOk">Remove</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgLog" class="wide" closedby="any" aria-labelledby="t4">
+  <div class="body">
+    <h2 id="t4">Log</h2>
+    <pre class="log" id="logText" tabindex="0"></pre>
+    <div class="row-end">
+      <button class="btn" type="button" id="logRefresh">Refresh</button>
+      <form method="dialog" class="contents"><button class="btn primary" value="close">Close</button></form>
+    </div>
+  </div>
+</dialog>
+
+<script nonce="__NONCE__">
+'use strict';
+(() => {
+  const $ = (s, r = document) => r.querySelector(s);
+  const h = (tag, props = {}, ...kids) => {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) {
+      if (k === 'class') el.className = v;
+      else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+      else if (v === true) el.setAttribute(k, '');
+      else if (v !== false && v != null) el.setAttribute(k, v);
+    }
+    for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid.nodeType ? kid : document.createTextNode(kid));
+    return el;
+  };
+
+  // ---- token: arrives once in the URL fragment, then lives in localStorage so a bookmark keeps working
+  let token = localStorage.getItem('rhapsody-server.token') || '';
+  const fromHash = location.hash.match(/^#t=([\w-]+)/);
+  if (fromHash) {
+    token = fromHash[1];
+    localStorage.setItem('rhapsody-server.token', token);
+    history.replaceState(null, '', location.pathname + '#/services');
+  }
+
+  let S = null, V = null, P = null, op = null, err = null, conn = false, lastState = '';
+  let pfTab = 'requests', pfSel = null; const pfOpen = new Set();
+  const busy = () => !!(op && op.running);
+  const route = () => (location.hash.match(/^#\/(\w+)/) || [, 'services'])[1];
+
+  async function api(method, path, body) {
+    const res = await fetch(path, {
+      method,
+      headers: { 'X-Rhapsody-Server-Token': token, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { const e = new Error(data.error || res.statusText); e.status = res.status; throw e; }
+    return data;
+  }
+
+  async function refresh() {
+    try {
+      const data = await api('GET', '/api/state');
+      op = data.op;
+      const json = JSON.stringify(data.state);
+      const changed = json !== lastState;
+      lastState = json; S = data.state;
+      if (changed) { fillPhp(); render(); } else renderActivity();
+      $('#btnBrowse').hidden = !S.canPickFolder;
+    } catch (e) { if (e.status === 401) { S = null; renderLocked(); } else { err = e.message; render(); } }
+  }
+
+  async function act(fn) {
+    err = null;
+    try { await fn(); } catch (e) { err = e.message; }
+    await refresh();
+    if (route() === 'versions') loadVersions();
+    if (route() === 'profiler') loadProfile();
+    if (route() === 'modules') loadModules();
+    render();
+  }
+
+  async function loadVersions() {
+    try { V = await api('GET', '/api/versions'); } catch (e) { V = []; err = e.message; }
+    if (route() === 'versions') render();
+  }
+
+  async function loadProfile() {
+    try { P = await api('GET', '/api/profile'); } catch (e) { err = e.message; }
+    if (route() === 'profiler') render();
+  }
+
+  // ---- views
+  const stateText = { running: 'Running', starting: 'Starting…', stopped: 'Stopped', crashed: 'Stopped unexpectedly' };
+
+  function channel(s) {
+    const on = s.state === 'running' || s.state === 'starting';
+    return h('div', { class: 'chan' },
+      h('span', { class: 'lamp ' + s.state }),
+      h('div', { class: 'chan-main' },
+        h('div', { class: 'chan-name' }, s.name, h('span', { class: 'state' }, stateText[s.state] || s.state)),
+        h('div', { class: 'chan-detail' }, s.detail)),
+      h('button', { class: 'btn sm quiet', onclick: () => openLog(s) }, 'Logs'),
+      s.toggleable
+        ? h('button', { class: 'switch', role: 'switch', 'aria-checked': String(on), 'aria-label': s.name, disabled: busy(),
+            onclick: () => act(() => api('POST', `/api/services/${s.id}/${on ? 'stop' : 'start'}`)) })
+        : h('span', { class: 'muted small' }, 'Automatic'));
+  }
+
+  function viewServices() {
+    const anyOn = S.services.some(s => s.toggleable && (s.state === 'running' || s.state === 'starting'));
+    return h('div', {},
+      h('div', { class: 'page-head' }, h('h1', {}, 'Services'),
+        h('div', { class: 'actions' },
+          h('button', { class: 'btn primary', disabled: busy(), onclick: () => act(() => api('POST', '/api/services/start-all')) }, 'Start all'),
+          h('button', { class: 'btn', disabled: busy() || !anyOn, onclick: () => act(() => api('POST', '/api/services/stop-all')) }, 'Stop all'))),
+      h('p', { class: 'lede muted' }, 'Start only what you need. PHP workers start and stop with the web server.'),
+      S.services.map(channel),
+      h('div', { class: 'quick' },
+        h('a', { href: `https://phpmyadmin.${S.settings.tld}`, target: '_blank', rel: 'noopener' }, 'Open phpMyAdmin'),
+        h('a', { href: `https://mail.${S.settings.tld}`, target: '_blank', rel: 'noopener' }, 'Open mail inbox')));
+  }
+
+  function viewSites() {
+    const head = h('div', { class: 'page-head' }, h('h1', {}, 'Sites'),
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn primary', disabled: busy(), onclick: () => $('#dlgRhapsody').showModal() }, 'New Rhapsody site'),
+        h('button', { class: 'btn', disabled: busy(), onclick: () => $('#dlgExisting').showModal() }, 'Add existing folder')));
+    const lede = h('p', { class: 'lede muted' }, `Each site gets its own .${S.settings.tld} address, a trusted HTTPS certificate and its own PHP version.`);
+    if (!S.sites.length) {
+      return h('div', {}, head, lede, h('div', { class: 'empty' },
+        h('p', {}, 'No sites yet. Create a Rhapsody site, or point Rhapsody Server at a project folder you already have.'),
+        h('button', { class: 'btn primary', onclick: () => $('#dlgRhapsody').showModal() }, 'New Rhapsody site')));
+    }
+    const rows = S.sites.map(site => h('tr', {},
+      h('td', {}, h('a', { href: site.url, target: '_blank', rel: 'noopener' }, site.domain)),
+      h('td', {}, h('select', { 'aria-label': `PHP version for ${site.domain}`, disabled: busy(),
+        onchange: e => act(() => api('PUT', `/api/sites/${site.name}/php`, { php: e.target.value })) },
+        S.settings.phpBranches.map(b => h('option', { value: b, selected: b === site.php }, 'PHP ' + b)))),
+      h('td', { class: 'path', title: site.root }, site.root, site.publicDir ? h('div', { class: 'small' }, 'serves /' + site.publicDir) : null),
+      h('td', { class: 'act' }, h('button', { class: 'btn sm quiet danger', disabled: busy(), onclick: () => removeSite(site) }, 'Remove'))));
+    return h('div', {}, head, lede, h('div', { class: 'table-wrap' },
+      h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Address'), h('th', {}, 'PHP'), h('th', {}, 'Folder'), h('th', {}))), h('tbody', {}, rows))));
+  }
+
+  async function removeSite(site) {
+    if (await confirmBox('Remove ' + site.domain + '?', 'Rhapsody Server stops serving it. Your project files and database are not touched.', 'Remove site'))
+      act(() => api('DELETE', `/api/sites/${site.name}`));
+  }
+
+  const vsel = {};   // tool id -> the series picked in its dropdown (survives re-renders)
+  const optionLabel = (c, v) =>
+    `${v.series}  (${v.version})` + (v.installed ? '  ·  installed' : v.bundled ? '  ·  bundled' : '') + (v.active ? `  ·  ${c.id === 'php' ? 'default' : 'active'}` : '');
+
+  function versionPicker(c) {
+    if (!c.versions.length) return h('p', { class: 'muted small' }, 'Nothing available yet.');
+    if (!c.versions.some(v => v.series === vsel[c.id])) vsel[c.id] = (c.versions.find(v => v.active) || c.versions[0]).series;
+    const cur = c.versions.find(v => v.series === vsel[c.id]);
+    const act1 = (path) => () => act(() => api('POST', path, { id: c.id, series: cur.series }));
+
+    let main;
+    if (!cur.installed) main = h('button', { class: 'btn primary', disabled: busy() || !(cur.available || cur.bundled),
+      title: cur.available || cur.bundled ? '' : 'Not available offline', onclick: act1('/api/versions/install') }, 'Install');
+    else if (!cur.active) main = h('button', { class: 'btn primary', disabled: busy(), onclick: act1('/api/versions/activate') }, c.id === 'php' ? 'Make default' : 'Make active');
+    else main = h('button', { class: 'btn', disabled: true }, c.id === 'php' ? 'Default' : 'Active');
+
+    const installed = c.versions.filter(v => v.installed);
+    return h('div', {},
+      h('div', { class: 'vpick' },
+        h('select', { 'aria-label': `${c.name} version`, 'data-vsel': c.id,
+          onchange: e => { vsel[c.id] = e.target.value; render(); document.querySelector(`[data-vsel="${c.id}"]`)?.focus(); } },
+          c.versions.map(v => h('option', { value: v.series, selected: v.series === cur.series }, optionLabel(c, v)))),
+        main,
+        cur.removable ? h('button', { class: 'btn quiet danger', disabled: busy(), onclick: () => removeVersion(c, cur) }, 'Remove') : null),
+      h('p', { class: 'small muted installed-line' }, installed.length
+        ? 'On this computer: ' + installed.map(v => v.series + (v.active ? ` (${c.id === 'php' ? 'default' : 'active'})` : '')).join(', ')
+        : 'Nothing installed yet. It installs the first time it is needed, or pick one and press Install.'));
+  }
+
+  function viewVersions() {
+    const head = h('div', { class: 'page-head' }, h('h1', {}, 'Versions'));
+    const lede = h('p', { class: 'lede muted' }, 'The latest of each tool ships with Rhapsody Server. Pick a version in the list and install it when a project needs it.');
+    if (!V) { loadOnce(); return h('div', {}, head, lede, h('p', { class: 'muted' }, 'Checking for available versions…')); }
+    return h('div', {}, head, lede, V.map(c => h('section', { class: 'comp' },
+      h('h2', {}, c.name), h('p', { class: 'muted small' }, c.note),
+      c.offline ? h('div', { class: 'notice warn' }, h('span', {}, 'Couldn’t reach the download servers. Showing what is on this computer and in the bundle.')) : null,
+      versionPicker(c))));
+  }
+  let loading = false;
+  function loadOnce() { if (loading) return; loading = true; loadVersions().finally(() => { loading = false; }); }
+
+  async function removeVersion(c, v) {
+    if (await confirmBox(`Remove ${c.name} ${v.series}?`, 'The files are deleted from this computer. You can install it again later.', 'Remove version'))
+      act(() => api('POST', '/api/versions/remove', { id: c.id, series: v.series }));
+  }
+
+  // ---- modules: PHP extensions and Apache modules
+  const M = { tab: 'php', php: null, apache: null, branch: null, draftPhp: new Set(), draftApache: new Set() };
+  const sameSet = (a, b) => a.size === b.size && [...a].every(x => b.has(x));
+
+  async function loadModules() {
+    try {
+      if (M.tab === 'php') {
+        M.php = await api('GET', '/api/modules/php' + (M.branch ? `?branch=${encodeURIComponent(M.branch)}` : ''));
+        M.branch = M.php.branch;
+        M.draftPhp = new Set(M.php.extensions.filter(x => x.enabled).map(x => x.name));
+      } else {
+        M.apache = await api('GET', '/api/modules/apache');
+        M.draftApache = new Set(M.apache.modules.filter(x => x.enabled).map(x => x.name));
+      }
+    } catch (e) { err = e.message; }
+    if (route() === 'modules') render();
+  }
+
+  function moduleList(items, draft) {
+    const list = h('div', { class: 'mods' }, items.map(m => {
+      const on = draft.has(m.name);
+      const row = h('div', { class: 'mod' + (m.locked ? ' locked' : ''), 'data-find': (m.name + ' ' + m.description).toLowerCase() },
+        h('button', { class: 'switch', role: 'switch', 'aria-checked': String(on), 'aria-label': m.name, disabled: m.locked || busy(),
+          onclick: () => { if (on) draft.delete(m.name); else draft.add(m.name); render(); } }),
+        h('div', { class: 'mod-main' },
+          h('span', { class: 'mod-name mono' }, m.name),
+          m.description ? h('span', { class: 'muted small' }, m.description) : null,
+          m.note ? h('span', { class: 'mod-note' }, m.note) : null));
+      return row;
+    }));
+    const search = h('input', { type: 'search', placeholder: 'Filter…', 'aria-label': 'Filter the list', autocomplete: 'off',
+      oninput: e => { const q = e.target.value.trim().toLowerCase(); list.querySelectorAll('.mod').forEach(r => { r.hidden = q !== '' && !r.dataset.find.includes(q); }); } });
+    return { list, search };
+  }
+
+  function applyBar(changes, note, onApply, onReset) {
+    return h('div', { class: 'modbar' },
+      h('span', { class: 'grow muted small' }, changes ? `${changes} unsaved change${changes === 1 ? '' : 's'}. ${note}` : note),
+      h('button', { class: 'btn', disabled: !changes || busy(), onclick: onReset }, 'Undo changes'),
+      h('button', { class: 'btn primary', disabled: !changes || busy(), onclick: onApply }, 'Apply'));
+  }
+
+  function viewModules() {
+    const tabs = h('div', { class: 'seg', role: 'group', 'aria-label': 'Kind' },
+      h('button', { 'aria-pressed': String(M.tab === 'php'), onclick: () => { M.tab = 'php'; M.php = null; render(); loadModules(); } }, 'PHP extensions'),
+      h('button', { 'aria-pressed': String(M.tab === 'apache'), onclick: () => { M.tab = 'apache'; M.apache = null; render(); loadModules(); } }, 'Apache modules'));
+    const head = h('div', { class: 'page-head' }, h('h1', {}, 'Modules'), tabs);
+
+    if (M.tab === 'php') {
+      if (!M.php) return h('div', {}, head, h('p', { class: 'lede muted' }, 'Loading…'));
+      if (!M.php.branch) return h('div', {}, head, h('div', { class: 'empty' }, h('p', {}, 'No PHP version is installed yet. Start the web server once, or install one on the Versions page.')));
+      const original = new Set(M.php.extensions.filter(x => x.enabled).map(x => x.name));
+      const changes = [...M.draftPhp].filter(x => !original.has(x)).length + [...original].filter(x => !M.draftPhp.has(x)).length;
+      const { list, search } = moduleList(M.php.extensions, M.draftPhp);
+      const picker = h('select', { 'aria-label': 'PHP version', onchange: e => { M.branch = e.target.value; M.php = null; render(); loadModules(); } },
+        M.php.branches.map(b => h('option', { value: b, selected: b === M.php.branch }, 'PHP ' + b + (b === S.settings.defaultPhp ? ' (default)' : ''))));
+      return h('div', {}, head,
+        h('p', { class: 'lede muted' }, 'Choose which extensions PHP loads. Each PHP version has its own list.'),
+        h('div', { class: 'mod-tools' }, picker, search),
+        list,
+        applyBar(changes, M.php.workersRunning ? `Applying restarts PHP ${M.php.branch}.` : 'Takes effect the next time PHP starts.',
+          () => act(() => api('PUT', `/api/modules/php/${M.php.branch}`, { enabled: [...M.draftPhp] })),
+          () => { M.draftPhp = new Set(original); render(); }));
+    }
+
+    if (!M.apache) return h('div', {}, head, h('p', { class: 'lede muted' }, 'Loading…'));
+    if (!M.apache.installed) return h('div', {}, head, h('div', { class: 'empty' },
+      h('p', {}, 'Apache isn’t installed yet. It installs the first time you switch to it, or you can install it on the Versions page.'),
+      h('a', { href: '#/versions' }, 'Go to Versions')));
+    const original = new Set(M.apache.modules.filter(x => x.enabled).map(x => x.name));
+    const changes = [...M.draftApache].filter(x => !original.has(x)).length + [...original].filter(x => !M.draftApache.has(x)).length;
+    const { list, search } = moduleList(M.apache.modules, M.draftApache);
+    const note = !M.apache.serving ? 'Apache isn’t your web server right now; this is saved and used when you switch to it.'
+      : M.apache.running ? 'Applying restarts Apache.' : 'Takes effect the next time Apache starts.';
+    return h('div', {}, head,
+      h('p', { class: 'lede muted' }, `Choose which modules Apache ${M.apache.version} loads. nginx has no loadable modules, so this only applies to Apache.`),
+      h('div', { class: 'mod-tools' }, search),
+      list,
+      applyBar(changes, note,
+        () => act(() => api('PUT', '/api/modules/apache', { enabled: [...M.draftApache] })),
+        () => { M.draftApache = new Set(original); render(); }));
+  }
+
+  // ---- shell
+  function banners() {
+    const out = [];
+    if (S && S.windows && !S.hostsWritable)
+      out.push(h('div', { class: 'notice warn' },
+        h('span', {}, 'Rhapsody Server can’t edit your hosts file yet, so .test addresses won’t open.'),
+        h('button', { class: 'btn sm', disabled: busy(), onclick: () => act(() => api('POST', '/api/hosts/grant')) }, 'Grant access')));
+    if (err)
+      out.push(h('div', { class: 'notice bad', role: 'alert' }, h('span', {}, err),
+        h('span', { class: 'btns' },
+          /hosts file/i.test(err) ? h('button', { class: 'btn sm', onclick: () => act(() => api('POST', '/api/hosts/grant')) }, 'Grant access') : null,
+          h('button', { class: 'btn sm quiet', onclick: () => { err = null; render(); } }, 'Dismiss'))));
+    return out;
+  }
+
+  // ---- profiler
+  const fmtMs = ms => ms < 10 ? ms.toFixed(1) + ' ms' : ms < 1000 ? Math.round(ms) + ' ms' : (ms / 1000).toFixed(2) + ' s';
+  const level = ms => ms >= 500 ? 'bad' : ms >= 100 ? 'warn' : '';
+  const bar = (ms, max) => { const i = h('i', { class: level(ms) }); i.style.width = Math.max(2, Math.min(100, ms / max * 100)) + '%'; return h('div', { class: 'bar' }, i); };
+
+  function queryItem(q) {
+    const d = h('details', { class: 'q' },
+      h('summary', {},
+        h('span', { class: 'sql', title: q.sql }, q.sql.replace(/\s+/g, ' ')),
+        h('span', { class: 'who' }, (q.process || 'unknown') + (q.pid ? ' #' + q.pid : '')),
+        h('span', { class: 't ' + level(q.totalMs) }, fmtMs(q.totalMs))),
+      h('pre', {}, q.sql),
+      q.prepared ? h('div', { class: 'muted small' }, 'Prepared statement: values are sent separately, so they show as ? here.') : null,
+      q.error ? h('div', { class: 'err' }, q.error) : null);
+    if (pfOpen.has(q.id)) d.open = true;
+    d.addEventListener('toggle', () => { if (d.open) pfOpen.add(q.id); else pfOpen.delete(q.id); });
+    return d;
+  }
+
+  function requestRow(v, max) {
+    const r = v.request;
+    const row = h('button', { class: 'rq', 'aria-pressed': String(pfSel === r.id), onclick: () => { pfSel = pfSel === r.id ? null : r.id; render(); } },
+      h('span', { class: 'm' }, r.method),
+      h('span', { class: 'u', title: r.host + r.uri }, r.host + r.uri),
+      h('span', { class: 'st' + (r.status >= 400 ? ' bad' : '') }, String(r.status)),
+      h('span', { class: 'ms' }, fmtMs(r.durationMs)),
+      h('span', { class: 'sub' }, v.queries.length ? `${v.queries.length} SQL · ${fmtMs(v.sqlMs)}` : 'no SQL'),
+      bar(r.durationMs, max));
+    return row;
+  }
+
+  function viewProfiler() {
+    const on = !!(P && P.enabled);
+    const head = h('div', { class: 'page-head' }, h('h1', {}, 'Profiler'),
+      h('div', { class: 'actions' },
+        on ? h('button', { class: 'btn', onclick: () => act(() => api('POST', '/api/profile/clear')) }, 'Clear') : null,
+        h('button', { class: 'switch', role: 'switch', 'aria-checked': String(on), 'aria-label': 'Profiling', disabled: busy(),
+          onclick: () => act(() => api('POST', `/api/profile/${on ? 'disable' : 'enable'}`)) })));
+    if (!P) return h('div', {}, head, h('p', { class: 'lede muted' }, 'Loading…'));
+    if (!on) {
+      return h('div', {}, head, h('div', { class: 'empty' },
+        h('p', {}, 'See every request your sites serve and every SQL query they run, with timings, without adding anything to your code.'),
+        h('p', { class: 'muted small' }, 'Turning it on restarts MariaDB and the web server if they are running. MariaDB moves to an internal port and a recording proxy takes over its usual one, so your apps keep working unchanged. It is off by default and costs nothing while off.'),
+        h('button', { class: 'btn primary', disabled: busy(), onclick: () => act(() => api('POST', '/api/profile/enable')) }, 'Turn on profiling')));
+    }
+
+    const tabs = h('div', { class: 'seg', role: 'group', 'aria-label': 'View' },
+      h('button', { 'aria-pressed': String(pfTab === 'requests'), onclick: () => { pfTab = 'requests'; render(); } }, 'Requests'),
+      h('button', { 'aria-pressed': String(pfTab === 'queries'), onclick: () => { pfTab = 'queries'; render(); } }, 'Queries'));
+    const lede = h('p', { class: 'lede muted' }, 'Queries are matched to requests by time, so requests that overlap can share queries. Only the newest are kept.');
+    let body;
+    if (pfTab === 'requests') {
+      if (!P.requests.length) body = h('div', { class: 'empty' }, h('p', {}, 'No requests yet. Open one of your sites and they will appear here.'));
+      else {
+        const max = Math.max(...P.requests.map(v => v.request.durationMs), 1);
+        const list = h('div', { class: 'pf-list' }, P.requests.map(v => requestRow(v, max)));
+        const sel = P.requests.find(v => v.request.id === pfSel);
+        body = h('div', {}, list, sel ? h('div', { class: 'pf-detail' },
+          h('h2', {}, `${sel.request.method} ${sel.request.host}${sel.request.uri}`),
+          h('div', { class: 'muted small' },
+            `${sel.request.status} · ${fmtMs(sel.request.durationMs)} total` +
+            (sel.request.upstreamMs != null ? ` · ${fmtMs(sel.request.upstreamMs)} in PHP` : '') +
+            ` · ${sel.queries.length} quer${sel.queries.length === 1 ? 'y' : 'ies'}, ${fmtMs(sel.sqlMs)} in SQL`),
+          sel.queries.length ? sel.queries.map(queryItem) : h('p', { class: 'muted small' }, 'No SQL ran during this request.')) : null);
+      }
+    } else {
+      body = P.queries.length
+        ? h('div', { class: 'pf-detail' }, P.queries.map(queryItem))
+        : h('div', { class: 'empty' }, h('p', {}, 'No queries yet. Use one of your sites or connect any client to port ' + S.settings.mariaDbPort + '.'));
+    }
+    return h('div', {}, head, lede, tabs, body);
+  }
+
+  function render() {
+    if (!S) return;
+    const r = ['services', 'sites', 'versions', 'modules', 'profiler'].includes(route()) ? route() : 'services';
+    document.querySelectorAll('.rail nav a').forEach(a => {
+      if (a.dataset.route === r) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    });
+    const view = { services: viewServices, sites: viewSites, versions: viewVersions, modules: viewModules, profiler: viewProfiler }[r]();
+    $('#view').replaceChildren(...banners(), view);
+    renderActivity();
+  }
+
+  function renderActivity() {
+    const el = $('#activity');
+    const working = busy();
+    el.classList.toggle('working', working);
+    $('#activityText').textContent = working ? `${op.title}${op.message ? ': ' + op.message : ''}`
+      : !conn ? 'Reconnecting to Rhapsody Server…' : 'Ready';
+  }
+
+  function renderLocked() {
+    $('#view').replaceChildren(h('div', { class: 'empty' },
+      h('h1', {}, 'Open Rhapsody Server from the tray'),
+      h('p', {}, 'This page needs the key that the tray app puts in the address. Right-click the Rhapsody Server icon in the system tray and choose Open dashboard.')));
+    $('#activityText').textContent = 'Locked';
+  }
+
+  function fillPhp() {
+    document.querySelectorAll('select[data-php]').forEach(sel => {
+      if (sel.options.length) return;
+      for (const b of S.settings.phpBranches) sel.append(h('option', { value: b, selected: b === S.settings.defaultPhp }, 'PHP ' + b));
+    });
+    $('#hintRh').textContent = `Becomes my-app.${S.settings.tld}, with its own database, certificate and .env.`;
+  }
+
+  // ---- dialogs
+  function confirmBox(title, text, okLabel) {
+    $('#t3').textContent = title; $('#confirmText').textContent = text; $('#confirmOk').textContent = okLabel;
+    const d = $('#dlgConfirm');
+    return new Promise(resolve => {
+      d.addEventListener('close', () => { const v = d.returnValue === 'ok'; d.returnValue = ''; resolve(v); }, { once: true });
+      d.showModal();
+    });
+  }
+
+  function wire(formId, dialogId, build) {
+    $(formId).addEventListener('submit', e => {
+      if (e.submitter && e.submitter.value === 'cancel') return;   // native dialog closes itself
+      e.preventDefault();
+      const f = new FormData(e.target);
+      $(dialogId).close();
+      e.target.reset();
+      build(f);
+    });
+  }
+  wire('#fRhapsody', '#dlgRhapsody', f => act(() => api('POST', '/api/sites/scaffold', { name: f.get('name'), php: f.get('php') })));
+  wire('#fExisting', '#dlgExisting', f => act(() => api('POST', '/api/sites', {
+    name: f.get('name'), root: f.get('root'), publicDir: (f.get('publicDir') || '').trim(), php: f.get('php') })));
+
+  // Browse...: the tray app opens the normal Windows folder window on this computer and hands back the path.
+  const browse = $('#btnBrowse');
+  browse.addEventListener('click', async () => {
+    const msg = $('#pickErr'); msg.hidden = true;
+    browse.disabled = true; browse.textContent = 'Choosing…';
+    try {
+      const r = await api('POST', '/api/pick-folder', { initial: $('#rootInput').value.trim() || null });
+      if (r.path) {
+        $('#rootInput').value = r.path;
+        const nameEl = $('#fExisting [name=name]');
+        if (!nameEl.value) {   // suggest a site name from the folder name
+          const guess = r.path.replace(/[\\/]+$/, '').split(/[\\/]/).pop().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+          if (guess) nameEl.value = guess;
+        }
+      }
+    } catch (e) { msg.textContent = e.message; msg.hidden = false; }
+    finally { browse.disabled = false; browse.textContent = 'Browse…'; $('#rootInput').focus(); }
+  });
+
+  let logId = null;
+  async function loadLog() {
+    try { $('#logText').textContent = (await api('GET', `/api/logs/${logId}?lines=300`)).text; } catch (e) { $('#logText').textContent = e.message; }
+    const p = $('#logText'); p.scrollTop = p.scrollHeight;
+  }
+  function openLog(s) { logId = s.id; $('#t4').textContent = s.name + ' log'; $('#dlgLog').showModal(); loadLog(); }
+  $('#logRefresh').addEventListener('click', loadLog);
+
+  // ---- live updates
+  function connect() {
+    const es = new EventSource('/api/events?t=' + encodeURIComponent(token));
+    let t;
+    es.addEventListener('changed', () => { clearTimeout(t); t = setTimeout(refresh, 80); });
+    let tp;
+    es.addEventListener('profile', () => { if (route() === 'profiler') { clearTimeout(tp); tp = setTimeout(loadProfile, 100); } });
+    es.addEventListener('op', ev => { op = JSON.parse(ev.data); if (op.error) err = op.error; if (!op.running) refresh(); else renderActivity(); });
+    es.onopen = () => { conn = true; renderActivity(); };
+    es.onerror = () => { conn = false; renderActivity(); };
+  }
+
+  addEventListener('hashchange', () => { if (S) { render(); if (route() === 'profiler') loadProfile(); if (route() === 'modules') loadModules(); } });
+  refresh().then(() => { if (S) { connect(); if (route() === 'profiler') loadProfile(); if (route() === 'modules') loadModules(); } });
+})();
+</script>
+</body>
+</html>
