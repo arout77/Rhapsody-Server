@@ -1,5 +1,3 @@
-# Rhapsody-Server
-A modern alternative to XAMPP, WAMP, MAMP, et al. 
 # Rhapsody Server
 
 > A modern local development stack for PHP — with built-in profiling, AI-agent integration, and first-class support for the [Rhapsody framework](https://rhapsodyframework.com).
