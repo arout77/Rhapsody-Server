@@ -55,7 +55,7 @@ sealed class TrayContext : ApplicationContext
         _menu.Items.Clear();
         var running = _stack.Supervisor.All.Any(s => s.State == ServiceState.Running);
 
-        var open = Plain("Open dashboard", OpenDashboard);   // never blocked by a running operation: you may want to watch it
+        var open = Plain("Open dashboard", () => OpenDashboard());   // never blocked by a running operation: you may want to watch it
         open.Font = new Font(open.Font, FontStyle.Bold);
         _menu.Items.Add(new ToolStripSeparator());
 
@@ -86,10 +86,24 @@ sealed class TrayContext : ApplicationContext
         }
 
         _menu.Items.Add(new ToolStripSeparator());
+        Plain("Open sites folder", OpenSitesFolder);
+        Plain("Help", () => OpenDashboard("help"));
         Plain("Quit", () => _ = Quit());
     }
 
-    void OpenDashboard()
+    /// <summary>Where new sites are created. The folder is made first, because before the first site it doesn't exist yet.</summary>
+    void OpenSitesFolder()
+    {
+        try
+        {
+            var dir = _stack.Settings.ResolveSitesRoot();
+            Directory.CreateDirectory(dir);
+            Shell(dir);
+        }
+        catch (Exception ex) { Balloon("Couldn't open the sites folder: " + ex.Message, ToolTipIcon.Error); }
+    }
+
+    void OpenDashboard(string? page = null)
     {
         try
         {
@@ -98,7 +112,7 @@ sealed class TrayContext : ApplicationContext
                 _dash = new DashboardServer(_backend, _stack.Settings.UiToken);
                 _dash.Start(_stack.Settings.UiPort);   // started on first use, not at launch
             }
-            Shell(_dash.OpenUrl);
+            Shell(page == null ? _dash.OpenUrl : _dash.OpenUrl + "&go=" + page);   // the page reads &go= once, with the token
         }
         catch (Exception ex) { Balloon("Couldn't start the dashboard: " + ex.Message, ToolTipIcon.Error); }
     }

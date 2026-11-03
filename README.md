@@ -78,11 +78,24 @@ rather than produce an installer like that.
 
 ```
 dotnet run --project src\RhapsodyServer.Tray                       the app (add  -- --open  to open the dashboard)
-dotnet run --project tests\RhapsodyServer.SmokeTests               97 tests, any OS
+dotnet run --project tests\RhapsodyServer.SmokeTests               99 tests, any OS
 dotnet run --project tests\RhapsodyServer.SmokeTests -- --demo 7799 secret    the dashboard on fake data, for UI work
 ```
 
 Everything lives in `%LOCALAPPDATA%\RhapsodyServer` (override: `RHAPSODY_SERVER_HOME`). Bundle location override: `RHAPSODY_SERVER_BUNDLE`.
+
+## Help, and finding your code
+
+- The dashboard's **Help** page says where everything is stored, each with **Open folder** and **Copy path**: the folder new sites
+  are created in (default `%USERPROFILE%\Sites`), every site's own folder, the app's data folder (settings, certificates,
+  downloads, databases in `data\mariadb`) and the logs. It also has a short getting-started list and answers to the usual problems.
+- The **Sites** page shows where new sites are saved, with an Open folder button, plus one per site. The New Rhapsody site window
+  shows the exact folder the code will go in as you type the name, and after creating a site a notice with the path and an
+  **Open folder** button stays until dismissed.
+- **Tray menu:** *Open sites folder* (creates it first if this is before your first site) and *Help* (opens the dashboard on the
+  Help page, via `#t=TOKEN&go=help`).
+- The page never sends a path. `POST /api/open` takes only a place (`sites`, `site` + name, `data`, `logs`) and the app picks the
+  folder, so a request can't open or launch anything else. Folders open in Windows Explorer.
 
 ## AI help (optional, off by default)
 
@@ -118,7 +131,7 @@ All covered by tests. Services bind to 127.0.0.1 only.
 
 ## What's verified (in the build sandbox)
 
-- 97 automated tests: the AI helper (redaction, key store, provider client and fallback, prompt budget, API), resolvers, bundle build and offline install, version install/switch/remove guards, config generation,
+- 99 automated tests: the AI helper (redaction, key store, provider client and fallback, prompt budget, API), resolvers, bundle build and offline install, version install/switch/remove guards, config generation,
   hosts-file merging, `.env` handling against a real Rhapsody `.env`, real child-process supervision, the HTTP API
   (auth, DNS-rebinding, cross-origin, 409 busy, error mapping) and the live event stream, plus the profiler: MySQL packet
   parsing, the proxy against a fake MariaDB, access-log tailing, config generation and the profile API.
@@ -128,6 +141,8 @@ All covered by tests. Services bind to 127.0.0.1 only.
 
 ## What is NOT verified, and the first things to check
 
+0. **The tray's new menu items and Explorer.** `TrayContext` (Open sites folder, Help) and `ShellFolderOpener` use Windows-only APIs
+   and couldn't be compiled or run in the Linux build environment; the dashboard side is tested against a recording stand-in.
 0. **AI help against a real provider, and DPAPI.** The provider calls are tested against a stub and the key store with a stand-in
    protector; `DpapiProtector` (a direct `crypt32` call) and real Groq/Gemini/OpenRouter/Mistral/Ollama responses have not been
    run. The preset model names are best guesses: **Save and test** tells you in one click if one is gone.

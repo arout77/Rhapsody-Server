@@ -218,6 +218,22 @@ details.ai-backup[open] > summary { margin-bottom: .7rem; }
 .ai-who { color: var(--muted); font-size: .8125rem; overflow-wrap: anywhere; }
 details.sent summary { cursor: pointer; font-size: .875rem; color: var(--muted); }
 details.sent pre.log { margin-top: .5rem; max-height: 30vh; }
+/* where things are stored, and the Help page */
+.where { display: flex; flex-wrap: wrap; gap: .45rem .7rem; align-items: center; margin: -.5rem 0 1.1rem; font-size: .9rem; }
+.where .mono, .notice .mono { overflow-wrap: anywhere; }
+.hp { display: grid; gap: 1.6rem; max-width: 46rem; margin-top: 1.1rem; }
+.hp section { display: grid; gap: .75rem; }
+.hp .hp { margin-top: 0; gap: .9rem; }
+.hp h2 { font-size: 1.05rem; }
+.hp p { margin: 0; }
+.pathrow { display: grid; gap: .4rem; }
+.pathrow .pl { font-weight: 600; font-size: .9rem; }
+.pathrow .btns { display: flex; gap: .4rem; flex-wrap: wrap; }
+.pathbox { display: block; font: .85rem/1.45 var(--mono); background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: .5rem .65rem; overflow-wrap: anywhere; user-select: all; }
+.hp details { border-bottom: 1px solid var(--line); padding: .55rem 0; }
+.hp details > summary { cursor: pointer; font-weight: 600; }
+.hp details > p { margin: .55rem 0 .15rem; }
+.hp ol { margin: 0; padding-left: 1.3rem; display: grid; gap: .45rem; }
 .conn { position: fixed; right: 1rem; bottom: 1rem; margin: 0; background: var(--raised); box-shadow: 0 4px 18px rgb(0 0 0 / .25); }
 .conn[hidden] { display: none; }
 
@@ -264,6 +280,7 @@ dialog form.contents { display: contents; padding: 0; }
       <a href="#/modules" data-route="modules">Modules</a>
       <a href="#/profiler" data-route="profiler">Profiler</a>
       <a href="#/ai" data-route="ai">AI help</a>
+      <a href="#/help" data-route="help">Help</a>
     </nav>
     <nav aria-label="Tools" class="tools">
       <a href="#" id="lnkPma" target="_blank" rel="noopener">phpMyAdmin <span aria-hidden="true">↗</span></a>
@@ -289,6 +306,7 @@ dialog form.contents { display: contents; padding: 0; }
     <label>Site name
       <input name="name" required autofocus autocomplete="off" spellcheck="false" pattern="[a-z0-9]([a-z0-9\-]*[a-z0-9])?" maxlength="42" placeholder="my-app">
       <span class="hint" id="hintRh">Becomes my-app.test, with its own database, certificate and .env.</span>
+      <span class="hint" id="whereRh"></span>
     </label>
     <label>PHP version <select name="php" data-php></select></label>
     <details class="dbopts">
@@ -392,14 +410,14 @@ dialog form.contents { display: contents; padding: 0; }
 
   // ---- token: arrives once in the URL fragment, then lives in localStorage so a bookmark keeps working
   let token = localStorage.getItem('rhapsody-server.token') || '';
-  const fromHash = location.hash.match(/^#t=([\w-]+)/);
+  const fromHash = location.hash.match(/^#t=([\w-]+)(?:&go=(\w+))?/);   // the tray can open straight to a page: #t=TOKEN&go=help
   if (fromHash) {
     token = fromHash[1];
     localStorage.setItem('rhapsody-server.token', token);
-    history.replaceState(null, '', location.pathname + '#/services');
+    history.replaceState(null, '', location.pathname + '#/' + (fromHash[2] || 'services'));
   }
 
-  let S = null, V = null, P = null, A = null, op = null, err = null, conn = false, connectedOnce = false, lastState = '';
+  let S = null, V = null, P = null, A = null, created = null, op = null, err = null, conn = false, connectedOnce = false, lastState = '';
   let wasBusy = false, dismissed = false, doneTimer = null, apacheFile = null;
   let pfTab = 'requests', pfSel = null; const pfOpen = new Set();
   const busy = () => !!(op && op.running);
@@ -503,8 +521,10 @@ dialog form.contents { display: contents; padding: 0; }
         h('button', { class: 'btn primary', disabled: busy(), onclick: () => $('#dlgRhapsody').showModal() }, 'New Rhapsody site'),
         h('button', { class: 'btn', disabled: busy(), onclick: () => $('#dlgExisting').showModal() }, 'Add existing folder')));
     const lede = h('p', { class: 'lede muted' }, `Each site gets its own .${S.settings.tld} address, a trusted HTTPS certificate and its own PHP version.`);
+    const where = h('p', { class: 'where' }, 'New sites are saved in ', h('span', { class: 'mono' }, S.settings.sitesRoot),
+      S.canOpenFolder ? openBtn('sites', null, 'Open folder', 'btn sm') : null, h('a', { href: '#/help' }, 'Where is everything stored?'));
     if (!S.sites.length) {
-      return h('div', {}, head, lede, h('div', { class: 'empty' },
+      return h('div', {}, head, lede, where, h('div', { class: 'empty' },
         h('p', {}, 'No sites yet. Create a Rhapsody site, or point Rhapsody Server at a project folder you already have.'),
         h('button', { class: 'btn primary', onclick: () => $('#dlgRhapsody').showModal() }, 'New Rhapsody site')));
     }
@@ -514,8 +534,10 @@ dialog form.contents { display: contents; padding: 0; }
         onchange: e => act(() => api('PUT', `/api/sites/${site.name}/php`, { php: e.target.value })) },
         S.settings.phpBranches.map(b => h('option', { value: b, selected: b === site.php }, 'PHP ' + b)))),
       h('td', { class: 'path', title: site.root }, site.root, site.publicDir ? h('div', { class: 'small' }, 'serves /' + site.publicDir) : null),
-      h('td', { class: 'act' }, h('button', { class: 'btn sm quiet danger', disabled: busy(), onclick: () => removeSite(site) }, 'Remove'))));
-    return h('div', {}, head, lede, h('div', { class: 'table-wrap' },
+      h('td', { class: 'act' },
+        S.canOpenFolder ? openBtn('site', site.name, 'Open folder', 'btn sm') : null, ' ',
+        h('button', { class: 'btn sm quiet danger', disabled: busy(), onclick: () => removeSite(site) }, 'Remove'))));
+    return h('div', {}, head, lede, where, h('div', { class: 'table-wrap' },
       h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Address'), h('th', {}, 'PHP'), h('th', {}, 'Folder'), h('th', {}))), h('tbody', {}, rows))));
   }
 
@@ -862,12 +884,77 @@ dialog form.contents { display: contents; padding: 0; }
       out.push(h('div', { class: 'notice warn' },
         h('span', {}, 'Rhapsody Server can’t edit your hosts file yet, so .test addresses won’t open.'),
         h('button', { class: 'btn sm', disabled: busy(), onclick: () => act(() => api('POST', '/api/hosts/grant')) }, 'Grant access')));
+    const made = created && S ? S.sites.find(x => x.name === created.name) : null;
+    if (made)
+      out.push(h('div', { class: 'notice', role: 'status' },
+        h('span', {}, h('strong', {}, made.domain), ' is ready. Its code is saved in ', h('span', { class: 'mono' }, made.root), '.'),
+        h('span', { class: 'btns' },
+          S.canOpenFolder ? openBtn('site', made.name, 'Open folder', 'btn sm primary') : null,
+          h('button', { class: 'btn sm quiet', onclick: () => { created = null; render(); } }, 'Dismiss'))));
     if (err)
       out.push(h('div', { class: 'notice bad', role: 'alert' }, h('span', {}, err),
         h('span', { class: 'btns' },
           /hosts file/i.test(err) ? h('button', { class: 'btn sm', onclick: () => act(() => api('POST', '/api/hosts/grant')) }, 'Grant access') : null,
           h('button', { class: 'btn sm quiet', onclick: () => { err = null; render(); } }, 'Dismiss'))));
     return out;
+  }
+
+  // ---- folders: the page names a place; the app picks the path, so a request can't open anything else
+  async function openFolder(target, name, btn) {
+    const label = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = 'Opening…'; }
+    try { await api('POST', '/api/open', { target, name: name || null }); }
+    catch (e) { err = e.message; render(); }
+    finally { if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = label; } }
+  }
+  const openBtn = (target, name, label, cls) =>
+    h('button', { class: cls || 'btn sm', type: 'button', onclick: e => openFolder(target, name, e.currentTarget) }, label);
+  const copyBtn = text => h('button', { class: 'btn sm', type: 'button', onclick: async e => {
+    const b = e.currentTarget;
+    try { await navigator.clipboard.writeText(text); b.textContent = 'Copied'; } catch { b.textContent = 'Couldn’t copy'; }
+    setTimeout(() => { if (b.isConnected) b.textContent = 'Copy path'; }, 1400);
+  } }, 'Copy path');
+
+  function pathRow(label, path, target, name) {
+    return h('div', { class: 'pathrow' },
+      label ? h('div', { class: 'pl' }, label) : null,
+      h('code', { class: 'pathbox', tabindex: 0 }, path),
+      h('div', { class: 'btns' }, S.canOpenFolder ? openBtn(target, name, 'Open folder', 'btn sm primary') : null, copyBtn(path)));
+  }
+
+  function viewHelp() {
+    const st = S.settings, sep = st.sitesRoot.includes('\\') ? '\\' : '/';
+    const q = (question, ...answer) => h('details', {}, h('summary', {}, question), h('p', {}, ...answer));
+    return h('div', {}, h('div', { class: 'page-head' }, h('h1', {}, 'Help')),
+      h('div', { class: 'hp' },
+        h('section', {},
+          h('h2', {}, 'Where your code is stored'),
+          h('p', {}, 'Every site is an ordinary folder on this computer. Rhapsody Server only serves it: your code, your Git history and your files all live in the folder itself, so you can open it in your editor or Git tool like any other project.'),
+          pathRow('New sites are created in', st.sitesRoot, 'sites'),
+          h('p', { class: 'muted small' }, 'A site you added from an existing folder stays exactly where it already is.'),
+          S.sites.length
+            ? h('div', { class: 'hp' }, S.sites.map(x => pathRow(x.domain, x.root, 'site', x.name)))
+            : h('p', { class: 'muted' }, 'No sites yet. Once you create one, its folder is listed here.')),
+        h('section', {},
+          h('h2', {}, 'Rhapsody Server’s own files'),
+          st.dataRoot ? pathRow('App data', st.dataRoot, 'data') : null,
+          h('p', { class: 'muted small' }, 'Settings, certificates, downloaded programs, and your databases (in data' + sep + 'mariadb). You normally never need to open this. Removing a site does not delete its folder or its database.'),
+          st.logsDir ? pathRow('Logs', st.logsDir, 'logs') : null,
+          h('p', { class: 'muted small' }, 'One log file per service. The Logs button on the Services page shows the same thing.')),
+        h('section', {},
+          h('h2', {}, 'Getting started'),
+          h('ol', {},
+            h('li', {}, 'On Services, make sure the web server is running. Start MariaDB too if your site uses a database.'),
+            h('li', {}, 'On Sites, choose New Rhapsody site and give it a name, such as my-app.'),
+            h('li', {}, `Open it from the Sites list at https://my-app.${st.tld}. If a banner mentions the hosts file, choose Grant access so .${st.tld} addresses open.`),
+            h('li', {}, 'phpMyAdmin (databases) and Mail inbox (mail your site sends) are in the sidebar.'))),
+        h('section', {},
+          h('h2', {}, 'If something goes wrong'),
+          q(`A .${st.tld} address doesn’t open`, 'Check that the web server is running on Services, and that no banner is asking you to grant hosts-file access.'),
+          q('A page says a PHP extension is missing', 'Open Modules, pick the PHP version your site uses, switch the extension on, and restart if it asks you to.'),
+          q('A site needs a different PHP version', 'Change it in the PHP column on Sites. To get more versions, use Versions.'),
+          q('A service won’t start', 'Open Services and press Logs on it to see why. With AI help turned on, Explain this log turns that into plain language.'),
+          h('p', {}, 'Want plain-language explanations of errors? ', h('a', { href: '#/ai' }, 'Set up AI help'), '.'))));
   }
 
   // ---- profiler
@@ -945,11 +1032,11 @@ dialog form.contents { display: contents; padding: 0; }
 
   function render() {
     if (!S) return;
-    const r = ['services', 'sites', 'versions', 'modules', 'profiler', 'ai'].includes(route()) ? route() : 'services';
+    const r = ['services', 'sites', 'versions', 'modules', 'profiler', 'ai', 'help'].includes(route()) ? route() : 'services';
     document.querySelectorAll('.rail nav a').forEach(a => {
       if (a.dataset.route === r) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     });
-    const view = { services: viewServices, sites: viewSites, versions: viewVersions, modules: viewModules, profiler: viewProfiler, ai: viewAi }[r]();
+    const view = { services: viewServices, sites: viewSites, versions: viewVersions, modules: viewModules, profiler: viewProfiler, ai: viewAi, help: viewHelp }[r]();
     $('#view').replaceChildren(...banners(), view);
     renderActivity();
   }
@@ -1003,7 +1090,16 @@ dialog form.contents { display: contents; padding: 0; }
     $('#lnkPma').href = `https://phpmyadmin.${S.settings.tld}`;
     $('#lnkMail').href = `https://mail.${S.settings.tld}`;
     $('#hintRh').textContent = `Becomes my-app.${S.settings.tld}, with its own database, certificate and .env.`;
+    updateWhere();
   }
+  function updateWhere() {
+    if (!S) return;
+    const root = S.settings.sitesRoot, sep = root.includes('\\') ? '\\' : '/';
+    const name = ($('#fRhapsody [name=name]').value || '').trim() || 'my-app';
+    $('#whereRh').textContent = `Its code will be saved in ${root.replace(/[\\/]+$/, '')}${sep}${name}`;
+  }
+  $('#fRhapsody [name=name]').addEventListener('input', updateWhere);
+  $('#fRhapsody').addEventListener('reset', () => setTimeout(updateWhere));
 
   // ---- dialogs
   function confirmBox(title, text, okLabel, danger = true) {
@@ -1026,9 +1122,12 @@ dialog form.contents { display: contents; padding: 0; }
       build(f);
     });
   }
-  wire('#fRhapsody', '#dlgRhapsody', f => act(() => api('POST', '/api/sites/scaffold', {
-    name: f.get('name'), php: f.get('php'),
-    dbName: (f.get('dbName') || '').trim() || null, dbUser: (f.get('dbUser') || '').trim() || null, dbPass: f.get('dbPass') || null })));
+  wire('#fRhapsody', '#dlgRhapsody', f => act(async () => {
+    await api('POST', '/api/sites/scaffold', {
+      name: f.get('name'), php: f.get('php'),
+      dbName: (f.get('dbName') || '').trim() || null, dbUser: (f.get('dbUser') || '').trim() || null, dbPass: f.get('dbPass') || null });
+    created = { name: f.get('name') };   // a notice tells them where the code went, with an Open folder button
+  }));
   wire('#fExisting', '#dlgExisting', f => act(() => api('POST', '/api/sites', {
     name: f.get('name'), root: f.get('root'), publicDir: (f.get('publicDir') || '').trim(), php: f.get('php') })));
 

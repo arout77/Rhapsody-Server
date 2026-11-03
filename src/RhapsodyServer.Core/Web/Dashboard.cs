@@ -3,8 +3,10 @@ namespace RhapsodyServer.Core.Web;
 public sealed record ServiceDto(string Id, string Name, string State, int? Port, bool Toggleable, string Detail);
 public sealed record SiteDto(string Name, string Domain, string Url, string Root, string PublicDir, string Php, bool Https);
 public sealed record SettingsDto(string Tld, string WebServer, string DefaultPhp, string[] PhpBranches,
-    int HttpPort, int HttpsPort, int MariaDbPort, int RedisPort, int SmtpPort, int MailUiPort, string SitesRoot);
-public sealed record DashboardState(ServiceDto[] Services, SiteDto[] Sites, SettingsDto Settings, bool HostsWritable, bool Windows, bool CanPickFolder = false);
+    int HttpPort, int HttpsPort, int MariaDbPort, int RedisPort, int SmtpPort, int MailUiPort, string SitesRoot,
+    string DataRoot = "", string LogsDir = "");
+public sealed record DashboardState(ServiceDto[] Services, SiteDto[] Sites, SettingsDto Settings, bool HostsWritable, bool Windows, bool CanPickFolder = false,
+    bool CanOpenFolder = false);
 /// <param name="UpdateTo">A newer build of this installed series that the vendor offers (apache and nginx only), else null.</param>
 public sealed record VersionDto(string Series, string Version, bool Installed, bool Bundled, bool Available, bool Active, bool Removable, string? UpdateTo = null);
 public sealed record ComponentDto(string Id, string Name, string Note, bool Offline, VersionDto[] Versions);
@@ -22,6 +24,9 @@ public sealed record ApacheModulesDto(bool Installed, string? Version, bool Serv
 public sealed record ModulesRequest(string[] Enabled);
 public sealed record PickFolderRequest(string? Initial);
 public sealed record VersionRequest(string Id, string Series);
+
+/// <param name="Target"><c>sites</c> (where new sites are created), <c>site</c> (one site's folder, by Name), <c>data</c> (the app's own files) or <c>logs</c>.</param>
+public sealed record OpenFolderRequest(string Target, string? Name);
 
 public sealed record AiProviderDto(string Id, string Name, string BaseUrl, string Model, bool NeedsKey, string? KeyUrl, string? Note);
 /// <summary>The AI page's state. Keys never leave the app: the page only learns whether one is saved.</summary>
@@ -87,6 +92,9 @@ public interface IDashboardBackend
     Task ImportApacheAsync(string fileName, Stream data, IProgress<string> p, CancellationToken ct);
 
     Task GrantHostsAccessAsync(IProgress<string> p, CancellationToken ct);
+
+    /// <summary>Shows a known folder in Windows Explorer. Throws ArgumentException for an unknown target or a folder that is gone.</summary>
+    void OpenFolder(OpenFolderRequest req);
 
     // ---- optional AI helper ("Explain this"). Not operations: they don't take the busy lock.
     AiConfigDto GetAi();

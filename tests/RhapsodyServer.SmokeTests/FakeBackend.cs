@@ -213,9 +213,27 @@ sealed class FakeBackend : IDashboardBackend
                 { var n = _sites.Count(s => s.Php == b); svcs.Add(new($"php-{b}", $"PHP {b}", web, null, false, $"2 workers, starts with the web server" + (n > 0 ? $", {n} site{(n == 1 ? "" : "s")}" : ""))); }
             return new DashboardState(svcs.ToArray(), _sites.ToArray(),
                 new SettingsDto("test", _web, _active["php"], new[] { "7.1", "7.4", "8.0", "8.1", "8.3", "8.4", "8.5" },
-                    80, 443, 3306, 6379, 1025, 8025, @"C:\Users\andrew\Sites"),
-                HostsWritable, true, CanPickFolder);
+                    80, 443, 3306, 6379, 1025, 8025, @"C:\Users\andrew\Sites", @"C:\Users\andrew\AppData\Local\RhapsodyServer", @"C:\Users\andrew\AppData\Local\RhapsodyServer\logs"),
+                HostsWritable, true, CanPickFolder, true);
         }
+    }
+
+    /// <summary>Folders the page asked to open, in order. Paths come from here, so a test can prove the request never chooses one.</summary>
+    public readonly List<string> Opened = new();
+    public void OpenFolder(OpenFolderRequest req)
+    {
+        string path;
+        lock (_g)
+            path = (req.Target ?? "").ToLowerInvariant() switch
+            {
+                "sites" => @"C:\Users\andrew\Sites",
+                "data" => @"C:\Users\andrew\AppData\Local\RhapsodyServer",
+                "logs" => @"C:\Users\andrew\AppData\Local\RhapsodyServer\logs",
+                "site" => _sites.FirstOrDefault(x => x.Name.Equals(req.Name ?? "", StringComparison.OrdinalIgnoreCase))?.Root
+                          ?? throw new ArgumentException($"There is no site called \"{req.Name}\"."),
+                _ => throw new ArgumentException("Unknown folder.")
+            };
+        lock (Opened) Opened.Add(path);
     }
 
     public string ReadLog(string id, int lines) =>

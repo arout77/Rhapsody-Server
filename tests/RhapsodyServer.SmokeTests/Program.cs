@@ -1198,6 +1198,8 @@ await Check("dashboard page: web server switch, activity window, sidebar tools, 
     foreach (var must in new[] { "data-route=\"ai\"", "id=\"dlgAi\"", "id=\"actExplain\"", "id=\"logExplain\"", "/api/ai/explain", "/api/ai/test", "Backup provider" })
         True(html.Contains(must), "missing: " + must);
     True(!html.Contains("innerHTML"), "model output is rendered from DOM nodes, never as markup");
+    foreach (var must in new[] { "data-route=\"help\"", "Where your code is stored", "id=\"whereRh\"", "/api/open", "&go=", "Open folder" })
+        True(html.Contains(must), "missing: " + must);
     True(!html.Contains("id=\"activity\""), "the bottom status bar is gone");
     True(!html.Contains("Open phpMyAdmin"), "the links moved to the sidebar");
 });
@@ -1567,6 +1569,74 @@ await Check("ai API: asking again replaces a question still waiting (409 for the
     finally { fake.AiNet.Script = null; }
 });
 
+
+// ===================================================================== where the code is stored / open folder
+Console.WriteLine("open folder");
+await Check("open folder (real backend): names map to server-chosen folders; a missing sites folder is created; gone folders are refused", async () =>
+{
+    var paths = new ServerPaths(Path.Combine(tmpRoot, "openf")); paths.EnsureCreated();
+    using var stack = new Stack(paths, new Installer(paths, new HttpClient(new ThrowingHandler())));
+    var sitesRoot = Path.Combine(tmpRoot, "openf-sites");
+    stack.Settings.SitesRoot = sitesRoot;
+    var blog = Path.Combine(tmpRoot, "openf-blog"); Directory.CreateDirectory(blog);
+    stack.Settings.Sites.Add(new Site { Name = "blog", Root = blog, PublicDir = "", Php = "8.5", Https = true });
+    stack.Settings.Sites.Add(new Site { Name = "ghost", Root = Path.Combine(tmpRoot, "openf-ghost"), PublicDir = "", Php = "8.5", Https = true });
+    var opener = new RecordingOpener();
+    var be = new StackBackend(stack, null, null, opener);
+
+    var st = be.GetState();
+    True(st.CanOpenFolder && st.Settings.SitesRoot == sitesRoot && st.Settings.DataRoot == paths.Root && st.Settings.LogsDir == paths.Logs, "state tells the page where things are");
+
+    True(!Directory.Exists(sitesRoot));
+    be.OpenFolder(new OpenFolderRequest("sites", null));
+    True(Directory.Exists(sitesRoot), "the sites folder is created so the button works before the first site");
+    be.OpenFolder(new OpenFolderRequest("DATA", null));
+    be.OpenFolder(new OpenFolderRequest("logs", "ignored"));
+    be.OpenFolder(new OpenFolderRequest("site", "BLOG"));
+    True(opener.Opened.SequenceEqual(new[] { sitesRoot, paths.Root, paths.Logs, blog }), string.Join(" | ", opener.Opened));
+
+    string Refused(OpenFolderRequest r) { try { be.OpenFolder(r); } catch (ArgumentException ex) { return ex.Message; } throw new Exception("expected a refusal"); }
+    True(Refused(new OpenFolderRequest("site", "ghost")).Contains("doesn't exist any more"), "a site folder that was deleted");
+    True(Refused(new OpenFolderRequest("site", "nope")).Contains("no site called"));
+    True(Refused(new OpenFolderRequest("site", @"..\..\Windows")).Contains("no site called"), "a name is never treated as a path");
+    True(Refused(new OpenFolderRequest(@"C:\Windows", null)).Contains("Unknown folder"), "a path is not a target");
+    True(Refused(new OpenFolderRequest("", null)).Contains("Unknown folder"));
+    Eq(4, opener.Opened.Count);   // none of the refused requests reached the file manager
+    await Task.CompletedTask;
+});
+
+await Check("open folder API: needs the token and the same origin; the page can only name a place, never choose a path", async () =>
+{
+    Eq(HttpStatusCode.Unauthorized, (await Call(Req(HttpMethod.Post, "/api/open", new { target = "sites" }, token: false))).Item1);
+    var evil = Req(HttpMethod.Post, "/api/open", new { target = "sites" }); evil.Headers.Add("Origin", "https://evil.example");
+    Eq(HttpStatusCode.Forbidden, (await Call(evil)).Item1);
+    Eq(0, fake.Opened.Count);
+
+    var (code, body) = await Call(Req(HttpMethod.Get, "/api/state"));
+    Eq(HttpStatusCode.OK, code);
+    var st = body.GetProperty("state");
+    True(st.GetProperty("canOpenFolder").GetBoolean());
+    True(st.GetProperty("settings").GetProperty("sitesRoot").GetString()!.EndsWith("Sites") && st.GetProperty("settings").GetProperty("logsDir").GetString()!.EndsWith("logs"));
+
+    foreach (var t in new[] { "sites", "data", "logs" }) Eq(HttpStatusCode.OK, (await Call(Req(HttpMethod.Post, "/api/open", new { target = t }))).Item1);
+    var firstSite = st.GetProperty("sites")[0];
+    Eq(HttpStatusCode.OK, (await Call(Req(HttpMethod.Post, "/api/open", new { target = "site", name = firstSite.GetProperty("name").GetString() }))).Item1);
+    Eq(firstSite.GetProperty("root").GetString(), fake.Opened.Last());
+    Eq(@"C:\Users\andrew\Sites", fake.Opened[0]);
+
+    var before = fake.Opened.Count;
+    Eq(HttpStatusCode.OK, (await Call(Req(HttpMethod.Post, "/api/open", new { target = "sites", path = @"C:\Windows\System32", root = "C:\\" }))).Item1);
+    Eq(@"C:\Users\andrew\Sites", fake.Opened.Last());   // extra fields in the request are ignored
+    Eq(before + 1, fake.Opened.Count);
+
+    foreach (var bad in new object[] { new { target = "windows" }, new { target = "site", name = "no-such-site" }, new { target = @"C:\Windows" }, new { target = "site", name = @"..\x" } })
+    {
+        var (c, b) = await Call(Req(HttpMethod.Post, "/api/open", bad));
+        Eq(HttpStatusCode.BadRequest, c); True(b.GetProperty("error").GetString()!.Length > 0);
+    }
+    Eq(before + 1, fake.Opened.Count);
+});
+
 try { Directory.Delete(tmpRoot, true); } catch { }
 Console.WriteLine($"\n{passed} passed, {failed} failed");
 return failed == 0 ? 0 : 1;
@@ -1588,4 +1658,11 @@ sealed class MapHandler(Dictionary<string, byte[]> map) : HttpMessageHandler
         Task.FromResult(map.TryGetValue(r.RequestUri!.ToString(), out var b)
             ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(b) }
             : new HttpResponseMessage(HttpStatusCode.NotFound));
+}
+
+sealed class RecordingOpener : IFolderOpener
+{
+    public readonly List<string> Opened = new();
+    public bool CanOpen => true;
+    public void Open(string folder) => Opened.Add(folder);
 }

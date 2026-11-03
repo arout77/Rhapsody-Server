@@ -275,6 +275,10 @@ public sealed class DashboardServer : IDisposable
                     return;
                 }
 
+                case ("POST", "open") when a2 == "":
+                    _backend.OpenFolder(await Body<OpenFolderRequest>(req));
+                    await SendAsync(res, 200, new { ok = true });
+                    return;
                 case ("GET", "ai"):
                     await SendAsync(res, 200, _backend.GetAi());
                     return;

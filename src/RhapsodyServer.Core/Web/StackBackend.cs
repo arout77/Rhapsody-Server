@@ -9,13 +9,15 @@ public sealed class StackBackend : IDashboardBackend
     readonly Stack _s;
     readonly IFolderPicker? _picker;
     readonly AiHelper _ai;
+    readonly IFolderOpener _opener;
     public event Action? Changed;
     public event Action? ProfileChanged;
 
-    public StackBackend(Stack stack, IFolderPicker? folderPicker = null, AiService? ai = null)
+    public StackBackend(Stack stack, IFolderPicker? folderPicker = null, AiService? ai = null, IFolderOpener? opener = null)
     {
         _s = stack;
         _picker = folderPicker;
+        _opener = opener ?? new ShellFolderOpener();
         _s.Settings.Ai ??= new AiSettings();   // a settings.json from before the AI helper existed
         ai ??= new AiService(_s.Settings.Ai, _s.Save, new AiKeyStore(Path.Combine(_s.Paths.Root, "ai-keys.json")),
             Path.Combine(_s.Paths.Root, "ai-providers.json"));
@@ -66,11 +68,40 @@ public sealed class StackBackend : IDashboardBackend
             $"{(x.Https ? "https" : "http")}://{_s.Domain(x.Name)}", x.Root, x.PublicDir, x.Php, x.Https)).ToArray();
 
         var settings = new SettingsDto(st.Tld, st.WebServer.ToString(), st.DefaultPhp, PhpResolver.SupportedBranches,
-            st.HttpPort, st.HttpsPort, st.MariaDbPort, st.RedisPort, st.SmtpPort, st.MailUiPort, st.ResolveSitesRoot());
+            st.HttpPort, st.HttpsPort, st.MariaDbPort, st.RedisPort, st.SmtpPort, st.MailUiPort, st.ResolveSitesRoot(),
+            _s.Paths.Root, _s.Paths.Logs);
 
-        return new DashboardState(services.ToArray(), sites, settings, HostsFile.CanWrite(), OperatingSystem.IsWindows(), CanPickFolder);
+        return new DashboardState(services.ToArray(), sites, settings, HostsFile.CanWrite(), OperatingSystem.IsWindows(), CanPickFolder, _opener.CanOpen);
 
         string Of(string id) => StateName(_s.Supervisor.Get(id)?.State ?? ServiceState.Stopped);
+    }
+
+    // ---------------------------------------------------------- open a folder
+    /// <summary>
+    /// The page names a place ("sites", "logs", a site by name); the path always comes from here, never from the request,
+    /// so this can't be used to open or launch anything else.
+    /// </summary>
+    public void OpenFolder(OpenFolderRequest req)
+    {
+        var target = (req.Target ?? "").Trim().ToLowerInvariant();
+        string path;
+        switch (target)
+        {
+            case "sites":
+                path = _s.Settings.ResolveSitesRoot();
+                Directory.CreateDirectory(path);   // before the first site exists the folder isn't there yet; opening it should still work
+                break;
+            case "data": path = _s.Paths.Root; break;
+            case "logs": path = _s.Paths.Logs; break;
+            case "site":
+                var site = _s.Settings.Sites.FirstOrDefault(x => x.Name.Equals(req.Name ?? "", StringComparison.OrdinalIgnoreCase))
+                    ?? throw new ArgumentException($"There is no site called \"{req.Name}\".");
+                path = site.Root;
+                break;
+            default: throw new ArgumentException("Unknown folder.");
+        }
+        if (!Directory.Exists(path)) throw new ArgumentException($"That folder doesn't exist any more: {path}");
+        _opener.Open(path);
     }
 
     // ---------------------------------------------------------- folder picker
