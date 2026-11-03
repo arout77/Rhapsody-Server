@@ -2,8 +2,10 @@ using System.IO.Compression;
 using System.Net;
 using System.Net.Http.Json;
 using System.Net.Sockets;
+using System.Text;
 using System.Text.Json;
 using RhapsodyServer.Core;
+using RhapsodyServer.Core.Ai;
 using RhapsodyServer.Core.Profiling;
 using RhapsodyServer.Core.Web;
 
@@ -1063,6 +1065,506 @@ await Check("branding: logo and icon are served (image/png, no token needed); no
         True((int)(await http.GetAsync(bad)).StatusCode is 400 or 404 or 200 && !(await (await http.GetAsync(bad)).Content.ReadAsStringAsync()).Contains("<html"), "only the allow-list: " + bad);
     var html = await (await http.GetAsync("/")).Content.ReadAsStringAsync();
     True(html.Contains("/assets/logo.png") && html.Contains("rel=\"icon\"") && html.Contains("href=\"#/modules\"") && html.Contains("id=\"btnBrowse\""));
+});
+
+Console.WriteLine("Web server, Apache builds, scaffold database, phpMyAdmin");
+CheckS("apache zip names: version is read from Apache Lounge file names, anything else is refused", () =>
+{
+    Eq("2.4.66", ApacheResolver.VersionFromArchiveName("httpd-2.4.66-251206-win64-VS17.zip")!);
+    Eq("2.4.66", ApacheResolver.VersionFromArchiveName("httpd-2.4.66-260107-Win64-VS18.zip")!);
+    Eq("2.4.38", ApacheResolver.VersionFromArchiveName("httpd-2.4.38-win64-VC15.zip")!);
+    Eq("2.4.58", ApacheResolver.VersionFromArchiveName(@"C:\Users\me\Downloads\httpd-2.4.58-win64-VS17.zip")!);
+    True(ApacheResolver.VersionFromArchiveName("apache.zip") == null);
+    True(ApacheResolver.VersionFromArchiveName("httpd-2.4.66-251206-win64-VS17.exe") == null);
+    True(ApacheResolver.VersionFromArchiveName("") == null);
+});
+await Check("importing an Apache zip installs it, replaces the old build, and refuses wrong files", async () =>
+{
+    var paths = new ServerPaths(Path.Combine(tmpRoot, "import")); paths.EnsureCreated();
+    using var stack = new Stack(paths, new Installer(paths, new HttpClient(new ThrowingHandler())));
+    var zipA = MakeZip(("Apache24/bin/httpd.exe", "x"), ("Apache24/conf/mime.types", "x"), ("ReadMe.txt", "x"));
+    await stack.ImportApacheAsync("httpd-2.4.58-231001-win64-VS17.zip", new MemoryStream(zipA));
+    Eq("2.4", stack.EffectiveActive("apache")); Eq("2.4.58", stack.Settings.Versions["apache-2.4"]);
+    True(File.Exists(Path.Combine(paths.Bin, "apache", "2.4", "bin", "httpd.exe")), "Apache24 wrapper folder removed");
+    // a newer build of the same series replaces it
+    await stack.ImportApacheAsync("httpd-2.4.66-251206-win64-VS17.zip", new MemoryStream(zipA));
+    Eq("2.4.66", stack.Settings.Versions["apache-2.4"]);
+    Eq(1, stack.InstalledSeries("apache").Count);
+    // wrong things are refused and change nothing
+    foreach (var (name, bytes, why) in new (string, byte[], string)[]
+    {
+        ("httpd-2.4.99-251206-win64-VS17.zip", MakeZip(("readme.txt", "x")), "isn't Apache"),
+        ("httpd-2.4.99-251206-win64-VS17.zip", new byte[] { 1, 2, 3, 4 }, "isn't a zip"),
+        ("httpd-2.4.99-251206-win32-VS17.zip", zipA, "32-bit"),
+        ("notes.zip", zipA, "name"),
+    })
+    {
+        try { await stack.ImportApacheAsync(name, new MemoryStream(bytes)); throw new Exception("accepted: " + why); }
+        catch (Exception ex) when (ex is ArgumentException or InvalidDataException) { }
+    }
+    Eq("2.4.66", stack.Settings.Versions["apache-2.4"]);
+    True(!Directory.GetFiles(paths.Downloads, "*.part").Any(), "no half-written files left");
+    True(!File.Exists(Path.Combine(paths.Downloads, "apache-2.4.99.zip")));
+    // only apache can be imported / updated in place
+    try { await stack.UpdateVersionAsync("php", "8.4"); throw new Exception("php updated"); } catch (ArgumentException) { }
+});
+await Check("updating Apache: downloads the newer build of the installed series and swaps it in", async () =>
+{
+    var paths = new ServerPaths(Path.Combine(tmpRoot, "update")); paths.EnsureCreated();
+    var page = "<a href=\"/download/VS17/binaries/httpd-2.4.66-251206-win64-VS17.zip\">z</a>";
+    var map = new Dictionary<string, byte[]>
+    {
+        ["https://www.apachelounge.com/download/"] = System.Text.Encoding.UTF8.GetBytes(page),
+        ["https://www.apachelounge.com/download/VS17/binaries/httpd-2.4.66-251206-win64-VS17.zip"] = MakeZip(("Apache24/bin/httpd.exe", "new")),
+    };
+    using var stack = new Stack(paths, new Installer(paths, new HttpClient(new MapHandler(map))));
+    await stack.ImportApacheAsync("httpd-2.4.58-231001-win64-VS17.zip", new MemoryStream(MakeZip(("Apache24/bin/httpd.exe", "old"))));
+    Eq("old", File.ReadAllText(Path.Combine(paths.Bin, "apache", "2.4", "bin", "httpd.exe")));
+    await stack.UpdateVersionAsync("apache", "2.4");
+    Eq("2.4.66", stack.Settings.Versions["apache-2.4"]); Eq("new", File.ReadAllText(Path.Combine(paths.Bin, "apache", "2.4", "bin", "httpd.exe")));
+    var msgs = new List<string>();
+    await stack.UpdateVersionAsync("apache", "2.4", new Progress<string>(m => msgs.Add(m)));   // already newest: nothing to do
+    Eq("2.4.66", stack.Settings.Versions["apache-2.4"]);
+});
+CheckS("scaffold database: defaults, validation, and SQL that is safe to re-run", () =>
+{
+    var d = RhapsodyScaffold.ResolveDb(new ScaffoldRequest("my-app", "8.4"));
+    Eq("my_app", d.Db); Eq("root", d.User); Eq("", d.Pass);
+    var c = RhapsodyScaffold.ResolveDb(new ScaffoldRequest("my-app", "8.4", DbName: "shop", DbUser: "shop_user", DbPass: "p'a\\ss"));
+    Eq("shop", c.Db); Eq("shop_user", c.User);
+    foreach (var bad in new[] { new ScaffoldRequest("a", "8.4", DbName: "x;drop"), new ScaffoldRequest("a", "8.4", DbUser: "u'x"),
+        new ScaffoldRequest("a", "8.4", DbUser: "root", DbPass: "secret"), new ScaffoldRequest("a", "8.4", DbUser: "u", DbPass: "a\nb") })
+    { try { RhapsodyScaffold.ResolveDb(bad); throw new Exception("accepted"); } catch (ArgumentException) { } }
+
+    var root = RhapsodyScaffold.DatabaseSql("my_app", "root", "");
+    True(root.Contains("CREATE DATABASE IF NOT EXISTS `my_app`") && !root.Contains("CREATE USER"), root);
+    var user = RhapsodyScaffold.DatabaseSql("shop", "shop_user", "p'a\\ss");
+    True(user.Contains("CREATE USER IF NOT EXISTS 'shop_user'@'127.0.0.1'") && user.Contains("'shop_user'@'localhost'"), user);
+    True(user.Contains("'p''a\\\\ss'"), "quote doubled, backslash doubled: " + user);
+    True(user.Contains("GRANT ALL PRIVILEGES ON `shop`.*") && user.EndsWith("FLUSH PRIVILEGES;"));
+    var vals = RhapsodyScaffold.EnvValues(new Settings(), "my-app", "my-app.test", "shop", "shop_user", "pw", "KEY");
+    Eq("shop", vals["DB_NAME"]); Eq("shop_user", vals["DB_USER"]); Eq("pw", vals["DB_PASS"]); Eq("KEY", vals["APP_KEY"]);
+    Eq("root", RhapsodyScaffold.EnvValues(new Settings(), "x", "x.test")["DB_USER"]);   // old call shape still gives the old defaults
+});
+CheckS("scaffold: database exists and credentials reach composer's install scripts before composer runs", () =>
+{
+    var src = File.ReadAllText(FindUp("src/RhapsodyServer.Core/RhapsodyScaffold.cs"));
+    var iDb = src.IndexOf("DatabaseSql(db, dbUser, dbPass)"); var iComposer = src.IndexOf("\"create-project\"");
+    True(iDb > 0 && iComposer > iDb, "database is created before composer create-project");
+    True(src.IndexOf("StartServiceAsync(\"mariadb\"") is var iStart && iStart > 0 && iStart < iDb, "MariaDB is started before that");
+    True(src.Contains("parent, env,"), "composer gets the DB_* values as its environment");
+});
+CheckS("phpMyAdmin: bundled version is 5.2.3 and its folder gets a .user.ini that hides deprecation notices only there", () =>
+{
+    Eq("5.2.3", Catalog.PhpMyAdmin.Version); True(Catalog.PhpMyAdmin.Url.Contains("/5.2.3/phpMyAdmin-5.2.3-"));
+    True(ConfigWriter.PhpMyAdminUserIni.Contains("display_errors=Off") && ConfigWriter.PhpMyAdminUserIni.Contains("error_reporting=8191"));
+    Eq(8191, 32767 & ~8192 & ~16384);   // E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED
+    True(ConfigWriter.PhpIni("8.5", @"C:\php", @"C:\t", new Settings()).Contains("display_errors=On"), "other sites keep full errors");
+});
+await Check("dashboard API: web server switch, update, import and scaffold database fields", async () =>
+{
+    Eq(HttpStatusCode.OK, (await Call(Req(HttpMethod.Post, "/api/webserver", new { kind = "Apache" }))).Item1);
+    var (_, st) = await Call(Req(HttpMethod.Get, "/api/state"));
+    Eq("Apache", st.GetProperty("state").GetProperty("settings").GetProperty("webServer").GetString());
+    Eq(HttpStatusCode.OK, (await Call(Req(HttpMethod.Post, "/api/webserver", new { kind = "Nginx" }))).Item1);
+
+    var (_, v) = await Call(Req(HttpMethod.Get, "/api/versions"));
+    var ap = v.EnumerateArray().First(c => c.GetProperty("id").GetString() == "apache").GetProperty("versions")[0];
+    Eq("2.4.66", ap.GetProperty("updateTo").GetString());
+    Eq(HttpStatusCode.OK, (await Call(Req(HttpMethod.Post, "/api/versions/update", new { id = "apache", series = "2.4" }))).Item1);
+    Eq(HttpStatusCode.BadRequest, (await Call(Req(HttpMethod.Post, "/api/versions/update", new { id = "php", series = "8.4" }))).Item1);
+
+    var zip = MakeZip(("Apache24/bin/httpd.exe", "x"));
+    var up = Req(HttpMethod.Post, "/api/versions/import-apache?name=httpd-2.4.66-251206-win64-VS17.zip");
+    up.Content = new ByteArrayContent(zip); up.Content.Headers.ContentType = new("application/zip");
+    Eq(HttpStatusCode.OK, (await Call(up)).Item1);
+    Eq("httpd-2.4.66-251206-win64-VS17.zip", fake.LastImportName); Eq((long)zip.Length, fake.LastImportBytes);
+    var bad = Req(HttpMethod.Post, "/api/versions/import-apache?name=whatever.zip"); bad.Content = new ByteArrayContent(zip);
+    Eq(HttpStatusCode.BadRequest, (await Call(bad)).Item1);
+    var anon = new HttpRequestMessage(HttpMethod.Post, "/api/versions/import-apache?name=httpd-2.4.66-251206-win64-VS17.zip") { Content = new ByteArrayContent(zip) };
+    Eq(HttpStatusCode.Unauthorized, (await Call(anon)).Item1);
+
+    Eq(HttpStatusCode.OK, (await Call(Req(HttpMethod.Post, "/api/sites/scaffold", new { name = "db-app", php = "8.4", dbName = "shop", dbUser = "shop_user", dbPass = "pw" }))).Item1);
+    Eq("shop", fake.LastScaffold!.DbName); Eq("shop_user", fake.LastScaffold!.DbUser); Eq("pw", fake.LastScaffold!.DbPass);
+    Eq(HttpStatusCode.OK, (await Call(Req(HttpMethod.Post, "/api/sites/scaffold", new { name = "db-app2", php = "8.4" }))).Item1);
+    True(fake.LastScaffold!.DbName == null && fake.LastScaffold!.DbUser == null);
+});
+await Check("dashboard page: web server switch, activity window, sidebar tools, Apache help and version button states", async () =>
+{
+    var html = await (await http.GetAsync("/")).Content.ReadAsStringAsync();
+    foreach (var must in new[] { "id=\"dlgActivity\"", "id=\"lnkPma\"", "id=\"lnkMail\"", "aria-label': 'Web server'", "https://www.apachelounge.com/download/",
+        "is-default", "is-active", "/api/versions/import-apache", "name=\"dbPass\"" })
+        True(html.Contains(must), "missing: " + must);
+    foreach (var must in new[] { "data-route=\"ai\"", "id=\"dlgAi\"", "id=\"actExplain\"", "id=\"logExplain\"", "/api/ai/explain", "/api/ai/test", "Backup provider" })
+        True(html.Contains(must), "missing: " + must);
+    True(!html.Contains("innerHTML"), "model output is rendered from DOM nodes, never as markup");
+    True(!html.Contains("id=\"activity\""), "the bottom status bar is gone");
+    True(!html.Contains("Open phpMyAdmin"), "the links moved to the sidebar");
+});
+
+
+// ===================================================================== AI helper (core pieces)
+Console.WriteLine("AI helper");
+const string TestKey = "gsk_TESTKEY1234567890abcdefABCDEF";
+(AiService Svc, AiSettings Cfg, StubAiHandler Net, AiKeyStore Keys) NewAi()
+{
+    var dir = Path.Combine(tmpRoot, "ai-" + Guid.NewGuid().ToString("N")[..6]); Directory.CreateDirectory(dir);
+    var cfg = new AiSettings(); var net = new StubAiHandler();
+    var keys = new AiKeyStore(Path.Combine(dir, "ai-keys.json"), new XorProtector());
+    return (new AiService(cfg, () => { }, keys, null, new AiClient(new HttpClient(net))), cfg, net, keys);
+}
+HttpResponseMessage Resp(HttpStatusCode c, string body) => new(c) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+async Task<AiException> Fails(Func<Task> f)
+{
+    try { await f(); } catch (AiException ex) { return ex; }
+    throw new Exception("expected the call to fail");
+}
+AiEndpointInput In(string provider, string? key = null, string? url = null, string? model = null, bool clear = false) => new(provider, url, model, key, clear);
+
+CheckS("provider presets: the built-in list loads; a file in the data folder replaces it; a broken file is ignored", () =>
+{
+    var builtIn = AiProviders.Load();
+    foreach (var id in new[] { "groq", "gemini", "openrouter", "mistral", "ollama", "custom" }) True(AiProviders.Find(builtIn, id) != null, id);
+    True(!AiProviders.Find(builtIn, "ollama")!.NeedsKey && AiProviders.Find(builtIn, "groq")!.NeedsKey);
+    True(builtIn.All(p => p.Id == "custom" || AiUrl.Validate(p.BaseUrl).Length > 0), "every preset URL passes validation");
+    var f = Path.Combine(tmpRoot, "ai-providers.json");
+    File.WriteAllText(f, """{"providers":[{"id":"mine","name":"Mine","baseUrl":"https://llm.example/v1","model":"m1","needsKey":true}]}""");
+    Eq(1, AiProviders.Load(f).Count); Eq("mine", AiProviders.Load(f)[0].Id);
+    File.WriteAllText(f, "{ not json");
+    Eq(builtIn.Count, AiProviders.Load(f).Count);
+});
+
+CheckS("settings from before the AI helper existed still load, with AI off", () =>
+{
+    var f = Path.Combine(tmpRoot, "old-settings.json");
+    File.WriteAllText(f, """{"tld":"test","webServer":"Nginx"}""");
+    var st = SettingsStore.Load(f);
+    True(st.Ai != null && !st.Ai.Enabled && st.Ai.Fallback == null);
+});
+
+CheckS("urls: https required except for this computer; comparison ignores case and a trailing slash", () =>
+{
+    Eq("https://api.groq.com/openai/v1", AiUrl.Validate(" https://API.groq.com/openai/v1/ "));
+    Eq("http://127.0.0.1:11434/v1", AiUrl.Validate("http://127.0.0.1:11434/v1"));
+    AiUrl.Validate("http://localhost:1234/v1");
+    foreach (var bad in new[] { "", "api.groq.com", "http://api.example.com/v1", "ftp://x/y", "https://user:pw@x.com/v1", "https://x.com/v1?key=abc" })
+    {
+        var threw = false; try { AiUrl.Validate(bad); } catch (ArgumentException) { threw = true; }
+        True(threw, "accepted: " + bad);
+    }
+    True(AiUrl.Same("https://A.com/v1/", "https://a.com/v1"));
+    True(!AiUrl.Same("https://a.com/v1", "https://b.com/v1"));
+});
+
+CheckS("redactor: labelled secrets, headers, URLs, key formats, passwords on a command line, e-mail and user names", () =>
+{
+    var r = new AiRedactor(new[] { "pma-secret-value", "tiny" }, "andrew");
+    var input = string.Join("\n",
+        "DB_PASS=hunter2", "MAIL_PASSWORD=\"p@ss word\"", "REDIS_PASSWORD='abc123'", "APP_KEY=" + new string('f', 128), "APP_ENV=local",
+        "{\"password\": \"s3cret\", \"user\": \"root\"}", "Authorization: Bearer abc.def.ghi", "Cookie: sid=zzz; theme=dark",
+        "mysql://root:topsecret@127.0.0.1:3306/app", "key sk-or-v1-0123456789abcdef0123456789abcdef used", "gsk_abcdefghijklmnopqrstuvwxyz1234",
+        "AIzaSyA-1234567890abcdefghijklmnopqrstuv", "mysql.exe -u root -pSuperSecret -h 127.0.0.1", "tool --password=abc123 --verbose",
+        "contact me@example.com", @"C:\Users\Andrew Smith\Sites\blog", "andrew ran it", "token pma-secret-value here", "base64:AbCdEfGhIjKlMnOpQrStUv==");
+    var o = r.Apply(input);
+    foreach (var leak in new[] { "hunter2", "p@ss word", "abc123", new string('f', 128), "s3cret", "abc.def.ghi", "sid=zzz", "topsecret", "0123456789abcdef0123456789abcdef",
+                 "gsk_abcdefghijkl", "AIzaSyA-123", "SuperSecret", "me@example.com", "Andrew", "pma-secret-value", "AbCdEfGhIjKl" })
+        True(!o.Contains(leak), "leaked: " + leak);
+    True(o.Contains("APP_ENV=local") && o.Contains("127.0.0.1:3306/app") && o.Contains("-h 127.0.0.1") && o.Contains("--verbose"), "ordinary text survives");
+    True(o.Contains("DB_PASS=[REDACTED]") && o.Contains("<user>"), "label kept, value gone");
+    Eq(o, r.Apply(o));   // applying it twice changes nothing
+    Eq("", r.Apply(null));
+    var plain = "PHP Fatal error: Failed loading Zend extension 'opcache' (tried: C:/x/bin/php/8.5/ext/php_opcache.dll) in Unknown on line 0";
+    Eq(plain, new AiRedactor().Apply(plain));
+});
+
+CheckS("log condenser: repeats collapse, distinct lines stay in order, the budget drops the oldest first", () =>
+{
+    var lines = Enumerable.Range(0, 400).Select(i => $"[2026-11-02 10:00:{i % 60:00}] PHP Deprecated: Return type of Foo::bar() in vendor/a.php on line {i}").ToList();
+    lines.Insert(100, "[2026-11-02 10:01:00] PHP Fatal error: Uncaught Error: Class \"Phinx\\Db\" not found");
+    var o = LogCondenser.Condense(string.Join("\n", lines), 2000);
+    True(o.Contains("(x400)"), "the 400 deprecations are one line");
+    True(o.Contains("Fatal error") && o.Split('\n').Length <= 3, "the one error that matters stays");
+    var distinct = "OLDEST-LINE-MARKER\n" + string.Join("\n", Enumerable.Range(0, 500).Select(i => $"entry {Guid.NewGuid()} unique text {new string((char)('a' + i % 26), 1 + i % 7)}")) + "\nNEWEST-LINE-MARKER";
+    var c = LogCondenser.Condense(distinct, 1500);
+    True(c.Length <= 1500, $"over budget: {c.Length}");
+    True(c.Contains("older log lines left out") && c.Contains("NEWEST-LINE-MARKER") && !c.Contains("OLDEST-LINE-MARKER"), "newest kept, oldest dropped");
+    var recurring = string.Join("\n", new[] { "Fatal: disk full at 10:00:01", "old one-off line" }.Concat(Enumerable.Range(0, 200).Select(i => $"entry {Guid.NewGuid()} filler line number {i}")).Concat(new[] { "Fatal: disk full at 10:09:59" }));
+    True(LogCondenser.Condense(recurring, 700).Contains("10:09:59"), "a recurring error is placed by its latest occurrence and shows the latest line");
+    Eq("", LogCondenser.Condense("  ", 100));
+});
+
+CheckS("key store: round-trips, never writes a key in the clear, and only returns it for the endpoint it was saved for", () =>
+{
+    var f = Path.Combine(tmpRoot, "ks-" + Guid.NewGuid().ToString("N")[..6], "ai-keys.json");
+    var ks = new AiKeyStore(f, new XorProtector());
+    True(ks.Get("primary", "https://a.com/v1") == null);
+    ks.Set("primary", "https://a.com/v1", TestKey);
+    Eq(TestKey, ks.Get("primary", "https://A.com/v1/"));
+    True(!File.ReadAllText(f).Contains(TestKey), "ciphertext only");
+    True(ks.Get("primary", "https://evil.example/v1") == null, "another endpoint never receives the key");
+    True(ks.Get("fallback", "https://a.com/v1") == null);
+    True(ks.AllKeys().Contains(TestKey));
+    ks.DropIfEndpointDiffers("primary", "https://a.com/v1"); True(ks.Has("primary", "https://a.com/v1"));
+    ks.DropIfEndpointDiffers("primary", "https://b.com/v1"); True(!ks.Has("primary", "https://a.com/v1"));
+    ks.Set("primary", "https://a.com/v1", "k2"); ks.Remove("primary"); True(!ks.Has("primary", "https://a.com/v1"));
+    File.WriteAllText(f, "{ damaged"); True(ks.Get("primary", "https://a.com/v1") == null, "a damaged file means no keys, not a crash");
+});
+
+await Check("client: posts to /chat/completions with the key, parses the answer, strips <think>, tolerates content parts", async () =>
+{
+    var net = new StubAiHandler { Answer = "<think>hmm</think>It is the **opcache** line." };
+    var c = new AiClient(new HttpClient(net));
+    var r = await c.ChatAsync(new AiCall("Groq", "https://api.groq.com/openai/v1/", "m1", TestKey), "sys", "usr", 123, TimeSpan.FromSeconds(5), default);
+    Eq("It is the **opcache** line.", r.Text);
+    var (url, auth, body) = net.Requests.Single();
+    Eq("https://api.groq.com/openai/v1/chat/completions", url); Eq("Bearer " + TestKey, auth);
+    using var d = JsonDocument.Parse(body);
+    Eq("m1", d.RootElement.GetProperty("model").GetString()); Eq(123, d.RootElement.GetProperty("max_tokens").GetInt32());
+    Eq("sys", d.RootElement.GetProperty("messages")[0].GetProperty("content").GetString());
+    True(!d.RootElement.GetProperty("stream").GetBoolean());
+
+    net.Script = _ => Resp(HttpStatusCode.OK, """{"choices":[{"message":{"content":[{"type":"text","text":"part one "},{"type":"text","text":"part two"}]},"finish_reason":"stop"}]}""");
+    Eq("part one part two", (await c.ChatAsync(new AiCall("X", "http://127.0.0.1:11434/v1", "m", null), "s", "u", 50, TimeSpan.FromSeconds(5), default)).Text);
+    True(net.Requests.Last().Auth == null, "no key, no Authorization header (Ollama)");
+});
+
+await Check("client: wrong key, unknown model, rate limit and outages are told apart; the provider's own words are included", async () =>
+{
+    var net = new StubAiHandler(); var c = new AiClient(new HttpClient(net));
+    AiCall Call1() => new("Groq", "https://api.groq.com/openai/v1", "m1", TestKey);
+    async Task<AiException> With(HttpStatusCode code, string body) { net.Script = _ => Resp(code, body); return await Fails(() => c.ChatAsync(Call1(), "s", "u", 50, TimeSpan.FromSeconds(5), default)); }
+
+    var e401 = await With(HttpStatusCode.Unauthorized, """{"error":{"message":"Invalid API Key"}}""");
+    True(!e401.Retryable && e401.Message.Contains("API key") && e401.Message.Contains("Invalid API Key"), e401.Message);
+    var e404 = await With(HttpStatusCode.NotFound, """{"error":{"message":"model not found"}}""");
+    True(!e404.Retryable && e404.Message.Contains("m1"), e404.Message);
+    var e429 = await With((HttpStatusCode)429, """[{"error":{"message":"quota exceeded"}}]""");
+    True(e429.Retryable && e429.Message.Contains("rate limit") && e429.Message.Contains("quota exceeded"), e429.Message);
+    True((await With(HttpStatusCode.BadGateway, "<html>bad gateway</html>")).Retryable);
+    True(!(await With(HttpStatusCode.Redirect, "")).Retryable);
+    var odd = await With(HttpStatusCode.OK, "<html>not json</html>"); True(odd.Message.Contains("OpenAI-compatible"), odd.Message);
+    var empty = await With(HttpStatusCode.OK, """{"choices":[{"message":{"content":null},"finish_reason":"length"}]}""");
+    True(empty.Retryable && empty.Message.Contains("ran out of room"), empty.Message);
+    net.Script = _ => Resp(HttpStatusCode.OK, """{"choices":[{"message":{"content":"half an ans"},"finish_reason":"length"}]}""");
+    True((await c.ChatAsync(Call1(), "s", "u", 50, TimeSpan.FromSeconds(5), default)).Text.Contains("cut off"));
+
+    var down = await Fails(() => new AiClient(new HttpClient(new ThrowingHandler())).ChatAsync(Call1(), "s", "u", 50, TimeSpan.FromSeconds(5), default));
+    True(down.Retryable && down.Message.Contains("api.groq.com"), down.Message);
+    var local = await Fails(() => new AiClient(new HttpClient(new ThrowingHandler())).ChatAsync(new AiCall("Ollama", "http://127.0.0.1:11434/v1", "m", null), "s", "u", 50, TimeSpan.FromSeconds(5), default));
+    True(local.Message.Contains("Ollama") || local.Message.Contains("running"), local.Message);
+
+    net.Script = null; net.DelayMs = 400;
+    var slow = await Fails(() => c.ChatAsync(Call1(), "s", "u", 50, TimeSpan.FromMilliseconds(80), default));
+    True(slow.Retryable && slow.Message.Contains("didn't answer"), slow.Message);
+});
+
+await Check("client: a key is never sent over plain http to a server on the internet", async () =>
+{
+    var net = new StubAiHandler(); var c = new AiClient(new HttpClient(net));
+    var threw = false;
+    try { await c.ChatAsync(new AiCall("X", "http://api.example.com/v1", "m", TestKey), "s", "u", 50, TimeSpan.FromSeconds(5), default); }
+    catch (ArgumentException) { threw = true; }
+    True(threw && net.Requests.Count == 0, "refused before anything was sent");
+});
+
+await Check("service: turning it on needs a key; the key lives in the key store, not in settings; a moved endpoint loses it", async () =>
+{
+    var (svc, cfg, net, keys) = NewAi();
+    True(!svc.View().Enabled && !svc.View().Ready, "off by default");
+    Eq("openai/gpt-oss-120b", svc.View().Primary.Model);   // blank settings show the preset
+
+    var noKey = Assert(() => svc.Save(new AiSaveInput(true, In("groq"), null)));
+    True(noKey.Contains("API key"), noKey);
+    True(!svc.View().Enabled, "a refused save changes nothing");
+    True(Assert(() => svc.Save(new AiSaveInput(false, In("groq", url: "http://x.example/v1"), null))).Contains("https"));
+    True(Assert(() => svc.Save(new AiSaveInput(false, In("groq", key: "has a space"), null))).Contains("API key"));
+    True(Assert(() => svc.Save(new AiSaveInput(false, In("nope"), null))).Contains("provider"));
+    True(Assert(() => svc.Save(new AiSaveInput(false, In("custom"), null))).Contains("base URL"));
+
+    svc.Save(new AiSaveInput(true, In("groq", key: TestKey), null));
+    True(svc.View().Ready && svc.View().Primary.HasKey);
+    True(!JsonSerializer.Serialize(cfg).Contains(TestKey), "settings.json never holds the key");
+
+    svc.Save(new AiSaveInput(true, In("groq", model: "other-model"), null));        // key omitted: kept
+    True(svc.View().Primary.HasKey && svc.View().Primary.Model == "other-model");
+    svc.Save(new AiSaveInput(true, In("groq", key: "second-key-value"), null)); Eq("second-key-value", keys.Get("primary", "https://api.groq.com/openai/v1"));
+
+    var moved = Assert(() => svc.Save(new AiSaveInput(true, In("mistral"), null)));  // another company: the Groq key must not follow
+    True(moved.Contains("needs an API key"), moved);
+    svc.Save(new AiSaveInput(false, In("mistral"), null));
+    True(!svc.View().Primary.HasKey && keys.AllKeys().Count == 0, "the old key was dropped, not carried over");
+
+    svc.Save(new AiSaveInput(true, In("ollama"), null));                             // local: no key needed
+    True(svc.View().Ready);
+    svc.Save(new AiSaveInput(true, In("ollama", key: "k"), null)); svc.Save(new AiSaveInput(true, In("ollama", clear: true), null));
+    True(!svc.View().Primary.HasKey);
+
+    await Task.CompletedTask;
+    string Assert(Action a) { try { a(); } catch (ArgumentException ex) { return ex.Message; } throw new Exception("expected a refusal"); }
+});
+
+await Check("service: a rate-limited or unreachable main provider falls back; a wrong key does not; the notice says why", async () =>
+{
+    var (svc, cfg, net, keys) = NewAi();
+    svc.Save(new AiSaveInput(true, In("groq", key: TestKey), In("gemini", key: "gem-key-12345")));
+    True(svc.View().Fallback!.HasKey && svc.View().Fallback!.Provider == "gemini");
+
+    var a0 = await svc.AskAsync("s", "u", default);
+    True(!a0.UsedFallback && a0.Provider == "Groq" && net.Requests.Count == 1);
+
+    net.Requests.Clear();
+    net.Script = n => n == 1 ? Resp((HttpStatusCode)429, """{"error":{"message":"slow down"}}""") : Resp(HttpStatusCode.OK, """{"choices":[{"message":{"content":"from backup"},"finish_reason":"stop"}]}""");
+    var a1 = await svc.AskAsync("s", "u", default);
+    True(a1.UsedFallback && a1.Text == "from backup" && a1.Provider == "Google Gemini" && a1.FallbackNote!.Contains("Groq"), a1.FallbackNote);
+    True(net.Requests[0].Url.Contains("groq.com") && net.Requests[1].Url.Contains("generativelanguage.googleapis.com"));
+    True(net.Requests[0].Auth!.Contains(TestKey) && net.Requests[1].Auth!.Contains("gem-key-12345") && !net.Requests[1].Auth!.Contains(TestKey), "each provider only ever sees its own key");
+
+    net.Requests.Clear();
+    net.Script = _ => Resp(HttpStatusCode.Unauthorized, """{"error":{"message":"bad key"}}""");
+    var e = await Fails(() => svc.AskAsync("s", "u", default));
+    True(e.Message.Contains("API key") && net.Requests.Count == 1, "a wrong key is reported, not hidden by the backup");
+
+    net.Requests.Clear();
+    net.Script = _ => Resp((HttpStatusCode)429, "{}");
+    var both = await Fails(() => svc.AskAsync("s", "u", default));
+    True(both.Message.Contains("backup") && net.Requests.Count == 2, both.Message);
+
+    string? same = null;
+    try { svc.Save(new AiSaveInput(true, In("groq"), In("groq"))); } catch (ArgumentException ex) { same = ex.Message; }
+    True(same != null && same!.Contains("same as the main one"), "a backup identical to the main provider is refused: " + same);
+    True(svc.View().Fallback!.Provider == "gemini", "and the refused save changed nothing");
+});
+
+await Check("service: off means nothing is sent; the newest question replaces one still waiting", async () =>
+{
+    var (svc, cfg, net, keys) = NewAi();
+    svc.Save(new AiSaveInput(false, In("groq", key: TestKey), null));
+    True((await Fails(() => svc.AskAsync("s", "u", default))).Message.Contains("turned off"));
+    Eq(0, net.Requests.Count);
+    svc.Save(new AiSaveInput(true, In("groq"), null));
+    net.DelayMs = 300;
+    var first = svc.AskAsync("s", "u", default);
+    await Task.Delay(80);
+    var second = svc.AskAsync("s", "u", default);                       // the newest question wins...
+    var replaced = await Fails(() => first);                            // ...and the one still waiting is cancelled
+    True(replaced.Busy && replaced.Message.Contains("newer question"), replaced.Message);
+    True((await second).Text.Length > 0);
+    net.DelayMs = 0;
+    var t = await svc.TestAsync("primary", default); True(t.Reply.Length > 0);
+    True((await Fails(() => svc.TestAsync("fallback", default))).Message.Contains("Nothing to test"));
+});
+
+CheckS("explainer: secrets are removed, the text is fenced as data, and the whole question stays inside the free-tier budget", () =>
+{
+    var red = new AiRedactor(new[] { "pma-secret-value" }, "andrew");
+    var unique = string.Join("\n", Enumerable.Range(0, 3000).Select(i =>
+        $"[2026-11-02 10:00:00] error {Guid.NewGuid()} in C:\\Users\\andrew\\Sites\\x\\vendor\\pkg{new string((char)('a' + i % 26), 1 + i % 9)}\\file.php token=pma-secret-value"));
+    var p = AiExplainer.Build(new ExplainInput("log", "Starting nginx", "composer failed: DB_PASS=hunter2 for me@example.com", "php-8.5", unique, "Web server selected: Nginx\nDefault PHP: 8.5"), red);
+    foreach (var leak in new[] { "hunter2", "andrew", "example.com", "pma-secret-value" }) True(!p.User.Contains(leak), "leaked: " + leak);
+    True(p.User.Contains("<error>") && p.User.Contains("<log>") && p.User.Contains("Default PHP: 8.5") && p.User.Contains("What I was doing: Starting nginx"));
+    True(p.System.Contains("untrusted") && p.System.Contains("[REDACTED]") && p.System.Contains("Modules"));
+    True(p.User.Length <= AiExplainer.TotalBudget + 900, $"question is {p.User.Length} characters");
+    var e = AiExplainer.Build(new ExplainInput("error", null, "boom", null, null, "env"), red);
+    True(e.User.Contains("Explain this error") && !e.User.Contains("<log>"));
+});
+
+// ===================================================================== AI helper (dashboard API)
+Console.WriteLine("AI API");
+await Check("ai API: needs the token and the same origin; nothing reaches a provider; the preset list is there", async () =>
+{
+    Eq(HttpStatusCode.Unauthorized, (await Call(Req(HttpMethod.Get, "/api/ai", token: false))).Item1);
+    Eq(HttpStatusCode.Unauthorized, (await Call(Req(HttpMethod.Post, "/api/ai/explain", new { kind = "error", text = "x" }, token: false))).Item1);
+    var bad = Req(HttpMethod.Post, "/api/ai/explain", new { kind = "error", text = "x" }); bad.Headers.Add("Origin", "https://evil.example");
+    Eq(HttpStatusCode.Forbidden, (await Call(bad)).Item1);
+    var badPut = Req(HttpMethod.Put, "/api/ai", new { enabled = true, primary = new { provider = "groq", apiKey = "stolen" } }); badPut.Headers.Add("Origin", "https://evil.example");
+    Eq(HttpStatusCode.Forbidden, (await Call(badPut)).Item1);
+    Eq(0, fake.AiNet.Requests.Count);
+
+    var (code, cfg) = await Call(Req(HttpMethod.Get, "/api/ai"));
+    Eq(HttpStatusCode.OK, code);
+    True(!cfg.GetProperty("enabled").GetBoolean() && !cfg.GetProperty("ready").GetBoolean(), "off until turned on");
+    var ids = cfg.GetProperty("providers").EnumerateArray().Select(x => x.GetProperty("id").GetString()).ToList();
+    foreach (var must in new[] { "groq", "gemini", "openrouter", "mistral", "ollama", "custom" }) True(ids.Contains(must), must);
+});
+
+await Check("ai API: save validates; the key is stored but never sent back or written in the clear", async () =>
+{
+    var (c1, b1) = await Call(Req(HttpMethod.Put, "/api/ai", new { enabled = true, primary = new { provider = "groq", model = "", apiKey = "" } }));
+    Eq(HttpStatusCode.BadRequest, c1); True(b1.GetProperty("error").GetString()!.Contains("API key"));
+    var (c2, b2) = await Call(Req(HttpMethod.Put, "/api/ai", new { enabled = true, primary = new { provider = "groq", baseUrl = "http://api.example.com/v1", apiKey = "k" } }));
+    Eq(HttpStatusCode.BadRequest, c2); True(b2.GetProperty("error").GetString()!.Contains("https"));
+    var (c3, b3) = await Call(Req(HttpMethod.Put, "/api/ai", new { enabled = true, primary = new { provider = "groq", apiKey = TestKey } }));
+    Eq(HttpStatusCode.OK, c3);
+    True(b3.GetProperty("enabled").GetBoolean() && b3.GetProperty("ready").GetBoolean() && b3.GetProperty("primary").GetProperty("hasKey").GetBoolean());
+    Eq("openai/gpt-oss-120b", b3.GetProperty("primary").GetProperty("model").GetString());
+    True(!b3.ToString().Contains(TestKey), "the key is never sent back to the page");
+    var (_, again) = await Call(Req(HttpMethod.Get, "/api/ai")); True(!again.ToString().Contains(TestKey));
+    True(!File.ReadAllText(Path.Combine(fake.AiDir, "ai-keys.json")).Contains(TestKey), "and never written in the clear");
+});
+
+await Check("ai API: test connection reaches the provider with the saved key", async () =>
+{
+    fake.AiNet.Requests.Clear();
+    var (code, b) = await Call(Req(HttpMethod.Post, "/api/ai/test", new { which = "primary" }));
+    Eq(HttpStatusCode.OK, code); True(b.GetProperty("reply").GetString()!.Length > 0);
+    var r = fake.AiNet.Requests.Single();
+    Eq("https://api.groq.com/openai/v1/chat/completions", r.Url); Eq("Bearer " + TestKey, r.Auth);
+    var (c2, b2) = await Call(Req(HttpMethod.Post, "/api/ai/test", new { which = "fallback" }));
+    Eq(HttpStatusCode.BadRequest, c2); True(b2.GetProperty("error").GetString()!.Contains("Nothing to test"));
+});
+
+await Check("ai API: explain sends a redacted question and returns exactly what was sent", async () =>
+{
+    fake.AiNet.Requests.Clear();
+    var apiKey128 = new string('a', 128);
+    var (code, b) = await Call(Req(HttpMethod.Post, "/api/ai/explain", new
+    {
+        kind = "error", title = "Creating Rhapsody site failed",
+        text = "Phinx: Access denied for user ''@'localhost'\nDB_PASS=hunter2hunter2\nAPP_KEY=" + apiKey128 + "\nfake-secret-token-123 opened C:\\Users\\Andrew\\Sites\\x"
+    }));
+    Eq(HttpStatusCode.OK, code);
+    var sent = b.GetProperty("sent").GetString()!;
+    foreach (var secret in new[] { "hunter2hunter2", apiKey128, "fake-secret-token-123", "Andrew" }) True(!sent.Contains(secret), "leaked: " + secret);
+    True(sent.Contains("Access denied") && sent.Contains("Creating Rhapsody site failed") && sent.Contains("Default PHP"));
+    var wire = fake.AiNet.Requests.Single().Body;
+    True(!wire.Contains("hunter2hunter2") && !wire.Contains(apiKey128) && !wire.Contains(TestKey), "what went over the wire is clean");
+    True(b.GetProperty("answer").GetString()!.Contains("opcache"));
+    Eq("Groq", b.GetProperty("provider").GetString()); True(!b.GetProperty("usedFallback").GetBoolean());
+});
+
+await Check("ai API: explaining a log reads the log itself; odd ids and unknown kinds are refused; switched off means nothing is sent", async () =>
+{
+    var (c1, b1) = await Call(Req(HttpMethod.Post, "/api/ai/explain", new { kind = "log", logId = "nginx" }));
+    Eq(HttpStatusCode.OK, c1); True(b1.GetProperty("sent").GetString()!.Contains("ready to accept connections"));
+    Eq(HttpStatusCode.BadRequest, (await Call(Req(HttpMethod.Post, "/api/ai/explain", new { kind = "log", logId = "../settings" }))).Item1);
+    Eq(HttpStatusCode.BadRequest, (await Call(Req(HttpMethod.Post, "/api/ai/explain", new { kind = "poem", text = "x" }))).Item1);
+    Eq(HttpStatusCode.BadRequest, (await Call(Req(HttpMethod.Post, "/api/ai/explain", new { kind = "error", text = "  " }))).Item1);
+    Eq(HttpStatusCode.OK, (await Call(Req(HttpMethod.Put, "/api/ai", new { enabled = false, primary = new { provider = "groq" } }))).Item1);
+    fake.AiNet.Requests.Clear();
+    var (c2, b2) = await Call(Req(HttpMethod.Post, "/api/ai/explain", new { kind = "error", text = "boom" }));
+    Eq(HttpStatusCode.BadRequest, c2); True(b2.GetProperty("error").GetString()!.Contains("turned off")); Eq(0, fake.AiNet.Requests.Count);
+});
+
+await Check("ai API: asking again replaces a question still waiting (409 for the old one); provider trouble comes back as a readable 400", async () =>
+{
+    Eq(HttpStatusCode.OK, (await Call(Req(HttpMethod.Put, "/api/ai", new { enabled = true, primary = new { provider = "groq" } }))).Item1);   // key kept
+    fake.AiNet.DelayMs = 400;
+    try
+    {
+        var first = Call(Req(HttpMethod.Post, "/api/ai/explain", new { kind = "error", text = "one" }));
+        await Task.Delay(100);
+        var second = Call(Req(HttpMethod.Post, "/api/ai/explain", new { kind = "error", text = "two" }));
+        Eq(HttpStatusCode.Conflict, (await first).Item1);
+        Eq(HttpStatusCode.OK, (await second).Item1);
+    }
+    finally { fake.AiNet.DelayMs = 0; }
+    fake.AiNet.Script = _ => Resp(HttpStatusCode.Unauthorized, """{"error":{"message":"Invalid API Key"}}""");
+    try
+    {
+        var (code, b) = await Call(Req(HttpMethod.Post, "/api/ai/explain", new { kind = "error", text = "three" }));
+        Eq(HttpStatusCode.BadRequest, code); True(b.GetProperty("error").GetString()!.Contains("rejected the API key"));
+    }
+    finally { fake.AiNet.Script = null; }
 });
 
 try { Directory.Delete(tmpRoot, true); } catch { }

@@ -348,6 +348,81 @@ public sealed class Stack : IDisposable
         if (wasRunning) await StartServiceAsync(id, p, ct);
     }
 
+    // -- updating and importing web servers
+    /// <summary>Tools whose newest build can be swapped in place. (PHP keeps several branches side by side; MariaDB upgrades need care.)</summary>
+    public static readonly string[] UpdatableIds = { "apache", "nginx" };
+
+    /// <summary>
+    /// Swaps in a different build of a series that may already be installed: stops the server if it is serving from that folder,
+    /// replaces the files, and starts it again.
+    /// </summary>
+    async Task ReplaceBuildAsync(Package pkg, IProgress<string>? p, CancellationToken ct)
+    {
+        var running = EffectiveActive(pkg.Id) == pkg.Series && Supervisor.Get(pkg.Id)?.State is ServiceState.Running or ServiceState.Starting;
+        if (running) { p?.Report($"Stopping {pkg.Name}..."); await StopServiceAsync(pkg.Id); }
+        await InstallPackageAsync(pkg, p, ct);
+        if (running) await StartServiceAsync(pkg.Id, p, ct);
+    }
+
+    /// <summary>Installs the newest build the vendor offers for a series that is already installed.</summary>
+    public async Task UpdateVersionAsync(string id, string series, IProgress<string>? p = null, CancellationToken ct = default)
+    {
+        if (!UpdatableIds.Contains(id)) throw new ArgumentException($"{Catalog.Shapes.GetValueOrDefault(id)?.Name ?? id} can't be updated in place.");
+        if (!IsSeriesInstalled(id, series)) throw new InvalidOperationException($"{Catalog.Shapes[id].Name} {series} isn't installed.");
+        var have = InstalledPkg(id, series).Version;
+        p?.Report($"Looking for a newer {Catalog.Shapes[id].Name}...");
+        var online = (await AvailableAsync(id, ct)).FirstOrDefault(x => x.Series == series)
+            ?? throw new InvalidOperationException($"No {Catalog.Shapes[id].Name} {series} download was found.");
+        if (VersionUtil.Compare(online.Version, have) <= 0)
+        {
+            p?.Report($"{Catalog.Shapes[id].Name} {have} is already the newest.");
+            return;
+        }
+        await ReplaceBuildAsync(online, p, ct);
+    }
+
+    /// <summary>Largest archive the dashboard will accept. Apache's zip is about 12 MB.</summary>
+    public const long MaxImportBytes = 256L * 1024 * 1024;
+
+    /// <summary>
+    /// Installs an Apache Lounge zip the person downloaded themselves, which is the way to get a specific or older build
+    /// (Apache Lounge keeps no archive and sometimes blocks scripted downloads). It replaces the build in that 2.x series.
+    /// </summary>
+    public async Task ImportApacheAsync(string fileName, Stream data, IProgress<string>? p = null, CancellationToken ct = default)
+    {
+        var version = ApacheResolver.VersionFromArchiveName(fileName)
+            ?? throw new ArgumentException("That doesn't look like an Apache Lounge download. The file name should be like httpd-2.4.66-251206-win64-VS17.zip.");
+        if (fileName.Contains("win32", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("That is the 32-bit build. Rhapsody Server needs the Win64 one.");
+
+        var target = Path.Combine(Paths.Downloads, $"apache-{version}.zip");
+        Directory.CreateDirectory(Paths.Downloads);
+        var part = target + ".part";
+        p?.Report("Receiving the file...");
+        try
+        {
+            await using (var dst = File.Create(part))
+            {
+                var buf = new byte[81920]; long total = 0; int n;
+                while ((n = await data.ReadAsync(buf, ct)) > 0)
+                {
+                    total += n;
+                    if (total > MaxImportBytes) throw new InvalidDataException("That file is far bigger than an Apache download. Nothing was installed.");
+                    await dst.WriteAsync(buf.AsMemory(0, n), ct);
+                }
+            }
+            p?.Report("Checking the archive...");
+            if (!ApacheResolver.LooksLikeApacheZip(part))
+                throw new InvalidDataException("That zip doesn't contain Apache24/bin/httpd.exe, so it isn't an Apache for Windows download. Nothing was installed.");
+            File.Move(part, target, overwrite: true);
+        }
+        finally { try { if (File.Exists(part)) File.Delete(part); } catch { /* best effort */ } }
+
+        var pkg = Catalog.Versioned("apache", VersionUtil.Series(version), version, "");
+        p?.Report($"Installing Apache {version}...");
+        await ReplaceBuildAsync(pkg, p, ct);
+    }
+
     public Task UninstallVersionAsync(string id, string series)
     {
         if (id == "php" && (Settings.DefaultPhp == series || Settings.Sites.Any(s => s.Php == series)))
@@ -646,6 +721,9 @@ public sealed class Stack : IDisposable
         Directory.CreateDirectory(tmp);
         File.WriteAllText(Path.Combine(dir, "config.inc.php"),
             ConfigWriter.PhpMyAdminConfig(Settings.PmaSecret, tmp, DbBackendPort));
+        // php-cgi reads .user.ini from the script's folder before the script runs. phpMyAdmin is older than the newest PHP,
+        // and a single deprecation notice printed before it starts its session is enough to break its login page.
+        File.WriteAllText(Path.Combine(dir, ".user.ini"), ConfigWriter.PhpMyAdminUserIni);
     }
 
     public async Task ReloadWebServerAsync(CancellationToken ct = default)

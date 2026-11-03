@@ -1,4 +1,6 @@
+using System.Text;
 using System.Text.RegularExpressions;
+using RhapsodyServer.Core.Ai;
 
 namespace RhapsodyServer.Core.Web;
 
@@ -6,13 +8,18 @@ public sealed class StackBackend : IDashboardBackend
 {
     readonly Stack _s;
     readonly IFolderPicker? _picker;
+    readonly AiHelper _ai;
     public event Action? Changed;
     public event Action? ProfileChanged;
 
-    public StackBackend(Stack stack, IFolderPicker? folderPicker = null)
+    public StackBackend(Stack stack, IFolderPicker? folderPicker = null, AiService? ai = null)
     {
         _s = stack;
         _picker = folderPicker;
+        _s.Settings.Ai ??= new AiSettings();   // a settings.json from before the AI helper existed
+        ai ??= new AiService(_s.Settings.Ai, _s.Save, new AiKeyStore(Path.Combine(_s.Paths.Root, "ai-keys.json")),
+            Path.Combine(_s.Paths.Root, "ai-providers.json"));
+        _ai = new AiHelper(ai, DescribeEnvironment, ReadLog, () => new[] { _s.Settings.UiToken, _s.Settings.PmaSecret });
         _s.Supervisor.StateChanged += _ => Changed?.Invoke();
         _s.OperationChanged += () => Changed?.Invoke();
         _s.Profile.Changed += () => ProfileChanged?.Invoke();
@@ -159,8 +166,10 @@ public sealed class StackBackend : IDashboardBackend
                     ?? bundled.GetValueOrDefault(sr)?.Version
                     ?? onl?.Version ?? sr;
                 var inUse = id == "php" && _s.Settings.Sites.Any(x => x.Php == sr);
+                var have = installed.Contains(sr) ? _s.InstalledPkg(id, sr).Version : null;
+                var update = have != null && onl != null && Stack.UpdatableIds.Contains(id) && VersionUtil.Compare(onl.Version, have) > 0 ? onl.Version : null;
                 return new VersionDto(sr, ver, installed.Contains(sr), bundled.ContainsKey(sr), onl != null,
-                    sr == active, installed.Contains(sr) && sr != active && !inUse);
+                    sr == active, installed.Contains(sr) && sr != active && !inUse, update);
             }).ToArray();
 
             result.Add(new ComponentDto(id, Catalog.Shapes[id].Name, Notes[id], !ok, rows));
@@ -191,8 +200,9 @@ public sealed class StackBackend : IDashboardBackend
 
     public Task RemoveSiteAsync(string name, IProgress<string> p, CancellationToken ct) => Run("Removing site", () => _s.RemoveSiteAsync(name, p, ct));
 
-    public Task ScaffoldAsync(string name, string php, IProgress<string> p, CancellationToken ct) => Run("Creating Rhapsody site", async () =>
-        { await RhapsodyScaffold.RunAsync(_s, new ScaffoldRequest(name.Trim().ToLowerInvariant(), php), p, ct); });
+    public Task ScaffoldAsync(ScaffoldRequestDto r, IProgress<string> p, CancellationToken ct) => Run("Creating Rhapsody site", async () =>
+        { await RhapsodyScaffold.RunAsync(_s, new ScaffoldRequest((r.Name ?? "").Trim().ToLowerInvariant(), r.Php,
+            DbName: r.DbName, DbUser: r.DbUser, DbPass: r.DbPass), p, ct); });
 
     public Task SwitchWebServerAsync(string kind, IProgress<string> p, CancellationToken ct) => Run("Switching web server", () =>
         _s.SwitchWebServerAsync(Enum.Parse<WebServerKind>(kind, ignoreCase: true), p, ct));
@@ -200,6 +210,8 @@ public sealed class StackBackend : IDashboardBackend
     public Task InstallVersionAsync(string id, string series, IProgress<string> p, CancellationToken ct) => Run($"Installing {id} {series}", () => _s.InstallVersionAsync(id, series, p, ct));
     public Task SetActiveVersionAsync(string id, string series, IProgress<string> p, CancellationToken ct) => Run($"Switching {id} to {series}", () => _s.SetActiveAsync(id, series, p, ct));
     public Task RemoveVersionAsync(string id, string series, IProgress<string> p, CancellationToken ct) => Run($"Removing {id} {series}", () => _s.UninstallVersionAsync(id, series));
+    public Task UpdateVersionAsync(string id, string series, IProgress<string> p, CancellationToken ct) => Run($"Updating {id} {series}", () => _s.UpdateVersionAsync(id, series, p, ct));
+    public Task ImportApacheAsync(string fileName, Stream data, IProgress<string> p, CancellationToken ct) => Run("Installing Apache from a file", () => _s.ImportApacheAsync(fileName, data, p, ct));
 
     public Task GrantHostsAccessAsync(IProgress<string> p, CancellationToken ct) => Run("Granting hosts-file access", async () =>
     {
@@ -207,4 +219,44 @@ public sealed class StackBackend : IDashboardBackend
         await HostsFile.GrantCurrentUserAccessAsync();
         await _s.ApplyAsync(p, ct);
     });
+
+    // ------------------------------------------------------------------- AI helper
+    public AiConfigDto GetAi() => _ai.Config();
+    public void SaveAi(AiSaveInput input) => _ai.Save(input);
+    public Task<AiTestResult> TestAiAsync(string which, CancellationToken ct) => _ai.TestAsync(which, ct);
+    public Task<AiAnswerDto> ExplainAsync(ExplainRequest req, CancellationToken ct) => _ai.ExplainAsync(req, ct);
+
+    static readonly Regex PhpBranchRx = new(@"(?i)php[\s\-_\\/]*(\d\.\d)\b", RegexOptions.Compiled);
+
+    /// <summary>
+    /// A few lines about the setup, so an answer can say "your site uses PHP 8.1, which has no X" instead of guessing.
+    /// Versions, ports, site names and which extensions are on; no folder paths, no credentials.
+    /// </summary>
+    string DescribeEnvironment(string aboutText)
+    {
+        var st = _s.Settings;
+        var state = GetState();
+        var sb = new StringBuilder();
+        sb.AppendLine($"Web server selected: {st.WebServer}");
+        sb.AppendLine("Services: " + string.Join("; ", state.Services.Select(x => $"{x.Name} {x.State}")));
+
+        var installed = _s.InstalledPhpBranches();
+        sb.AppendLine($"Default PHP: {st.DefaultPhp}. Installed PHP versions: {(installed.Count > 0 ? string.Join(", ", installed) : "none yet")}");
+        if (st.Sites.Count > 0)
+            sb.AppendLine("Sites: " + string.Join(", ", st.Sites.Select(x =>
+                $"{_s.Domain(x.Name)} (PHP {x.Php}, {(string.IsNullOrEmpty(x.PublicDir) ? "serves the project folder" : "serves /" + x.PublicDir)})")));
+        else sb.AppendLine("Sites: none yet");
+        sb.AppendLine($"Ports: http {st.HttpPort}, https {st.HttpsPort}, MariaDB {st.MariaDbPort}, Redis {st.RedisPort}, SMTP {st.SmtpPort}. Profiler {(st.ProfilingEnabled ? "on" : "off")}. Hosts file {(state.HostsWritable ? "writable" : "not writable by this app")}.");
+
+        var mentioned = PhpBranchRx.Matches(aboutText ?? "").Select(m => m.Groups[1].Value).Distinct().Where(installed.Contains).Take(2).ToList();
+        if (mentioned.Count == 0 && installed.Contains(st.DefaultPhp)) mentioned.Add(st.DefaultPhp);
+        foreach (var b in mentioned)
+        {
+            try { sb.AppendLine($"PHP {b} extensions on: {string.Join(", ", _s.PhpExtensionList(b).Where(x => x.Enabled).Select(x => x.Name))}"); }
+            catch (Exception ex) when (ex is IOException or InvalidOperationException or UnauthorizedAccessException) { /* not readable right now: leave it out */ }
+        }
+        if (Regex.IsMatch(aboutText ?? "", @"(?i)apache|httpd|\bAH\d{4,5}\b") && _s.ApacheModuleList() is { } mods)
+            sb.AppendLine("Apache modules on: " + string.Join(", ", mods.Where(x => x.Enabled).Select(x => x.Name)));
+        return sb.ToString().TrimEnd();
+    }
 }

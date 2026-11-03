@@ -1,0 +1,58 @@
+{
+  "providers": [
+    {
+      "id": "groq",
+      "name": "Groq",
+      "baseUrl": "https://api.groq.com/openai/v1",
+      "model": "openai/gpt-oss-120b",
+      "needsKey": true,
+      "keyUrl": "https://console.groq.com/keys",
+      "note": "Very fast. The free plan has daily request and token caps, so it can run out on a busy day."
+    },
+    {
+      "id": "gemini",
+      "name": "Google Gemini",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "model": "gemini-2.5-flash",
+      "needsKey": true,
+      "keyUrl": "https://aistudio.google.com/apikey",
+      "note": "Generous free tier and a large context window. Google may use free-tier requests to improve its products."
+    },
+    {
+      "id": "openrouter",
+      "name": "OpenRouter",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "model": "google/gemma-4-31b-it:free",
+      "needsKey": true,
+      "keyUrl": "https://openrouter.ai/keys",
+      "note": "One key for many models. Free models are limited to a few dozen requests a day, and the free model list changes often; pick one on openrouter.ai/models if this one is gone."
+    },
+    {
+      "id": "mistral",
+      "name": "Mistral",
+      "baseUrl": "https://api.mistral.ai/v1",
+      "model": "mistral-small-latest",
+      "needsKey": true,
+      "keyUrl": "https://console.mistral.ai/api-keys",
+      "note": "Free mode with rate limits. Free-mode requests may be used for training."
+    },
+    {
+      "id": "ollama",
+      "name": "Ollama (on this computer)",
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "model": "llama3.1:8b",
+      "needsKey": false,
+      "keyUrl": "https://ollama.com/download",
+      "note": "Runs locally: no key, no limits, nothing leaves this computer. Install Ollama, then run: ollama pull llama3.1:8b"
+    },
+    {
+      "id": "custom",
+      "name": "Custom (OpenAI-compatible)",
+      "baseUrl": "",
+      "model": "",
+      "needsKey": false,
+      "keyUrl": null,
+      "note": "Any server that speaks the OpenAI chat completions format, such as LM Studio or your own gateway. The key is optional."
+    }
+  ]
+}

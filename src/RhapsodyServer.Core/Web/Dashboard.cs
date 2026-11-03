@@ -5,11 +5,12 @@ public sealed record SiteDto(string Name, string Domain, string Url, string Root
 public sealed record SettingsDto(string Tld, string WebServer, string DefaultPhp, string[] PhpBranches,
     int HttpPort, int HttpsPort, int MariaDbPort, int RedisPort, int SmtpPort, int MailUiPort, string SitesRoot);
 public sealed record DashboardState(ServiceDto[] Services, SiteDto[] Sites, SettingsDto Settings, bool HostsWritable, bool Windows, bool CanPickFolder = false);
-public sealed record VersionDto(string Series, string Version, bool Installed, bool Bundled, bool Available, bool Active, bool Removable);
+/// <param name="UpdateTo">A newer build of this installed series that the vendor offers (apache and nginx only), else null.</param>
+public sealed record VersionDto(string Series, string Version, bool Installed, bool Bundled, bool Available, bool Active, bool Removable, string? UpdateTo = null);
 public sealed record ComponentDto(string Id, string Name, string Note, bool Offline, VersionDto[] Versions);
 
 public sealed record SiteRequest(string Name, string Root, string? PublicDir, string Php, bool? Https);
-public sealed record ScaffoldRequestDto(string Name, string Php);
+public sealed record ScaffoldRequestDto(string Name, string Php, string? DbName = null, string? DbUser = null, string? DbPass = null);
 public sealed record PhpRequest(string Php);
 public sealed record WebServerRequest(string Kind);
 
@@ -21,6 +22,15 @@ public sealed record ApacheModulesDto(bool Installed, string? Version, bool Serv
 public sealed record ModulesRequest(string[] Enabled);
 public sealed record PickFolderRequest(string? Initial);
 public sealed record VersionRequest(string Id, string Series);
+
+public sealed record AiProviderDto(string Id, string Name, string BaseUrl, string Model, bool NeedsKey, string? KeyUrl, string? Note);
+/// <summary>The AI page's state. Keys never leave the app: the page only learns whether one is saved.</summary>
+public sealed record AiConfigDto(bool Enabled, bool Ready, Ai.AiEndpointView Primary, Ai.AiEndpointView? Fallback, AiProviderDto[] Providers);
+/// <param name="Kind"><c>error</c> (Text is the error) or <c>log</c> (LogId names a service log the app reads itself).</param>
+public sealed record ExplainRequest(string Kind, string? Title, string? Text, string? LogId);
+/// <param name="Sent">Exactly what was sent to the provider (after redaction), so the person can see it.</param>
+public sealed record AiAnswerDto(string Answer, string Provider, string Model, bool UsedFallback, string? FallbackNote, string Sent);
+public sealed record AiTestRequest(string? Which);
 
 /// <summary>Shows the operating system's folder chooser. Implemented by the tray app; the core library has no UI.</summary>
 public interface IFolderPicker
@@ -65,12 +75,22 @@ public interface IDashboardBackend
     Task AddSiteAsync(SiteRequest req, IProgress<string> p, CancellationToken ct);
     Task SetSitePhpAsync(string name, string php, IProgress<string> p, CancellationToken ct);
     Task RemoveSiteAsync(string name, IProgress<string> p, CancellationToken ct);
-    Task ScaffoldAsync(string name, string php, IProgress<string> p, CancellationToken ct);
+    Task ScaffoldAsync(ScaffoldRequestDto req, IProgress<string> p, CancellationToken ct);
     Task SwitchWebServerAsync(string kind, IProgress<string> p, CancellationToken ct);
 
     Task InstallVersionAsync(string id, string series, IProgress<string> p, CancellationToken ct);
     Task SetActiveVersionAsync(string id, string series, IProgress<string> p, CancellationToken ct);
     Task RemoveVersionAsync(string id, string series, IProgress<string> p, CancellationToken ct);
+    /// <summary>Installs the newest build of an installed series (apache, nginx).</summary>
+    Task UpdateVersionAsync(string id, string series, IProgress<string> p, CancellationToken ct);
+    /// <summary>Installs an Apache Lounge zip the person downloaded (the way to pick an older or specific build).</summary>
+    Task ImportApacheAsync(string fileName, Stream data, IProgress<string> p, CancellationToken ct);
 
     Task GrantHostsAccessAsync(IProgress<string> p, CancellationToken ct);
+
+    // ---- optional AI helper ("Explain this"). Not operations: they don't take the busy lock.
+    AiConfigDto GetAi();
+    void SaveAi(Ai.AiSaveInput input);
+    Task<Ai.AiTestResult> TestAiAsync(string which, CancellationToken ct);
+    Task<AiAnswerDto> ExplainAsync(ExplainRequest req, CancellationToken ct);
 }

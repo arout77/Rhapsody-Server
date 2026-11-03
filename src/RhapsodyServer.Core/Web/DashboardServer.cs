@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using RhapsodyServer.Core.Ai;
 
 namespace RhapsodyServer.Core.Web;
 
@@ -168,7 +169,7 @@ public sealed class DashboardServer : IDisposable
                 case ("POST", "sites") when a2 == "scaffold":
                 {
                     var b = await Body<ScaffoldRequestDto>(req);
-                    await Reply(res, await RunOp("Creating Rhapsody site", (p, ct) => _backend.ScaffoldAsync(b.Name, b.Php, p, ct)));
+                    await Reply(res, await RunOp("Creating Rhapsody site", (p, ct) => _backend.ScaffoldAsync(b, p, ct)));
                     return;
                 }
                 case ("POST", "sites") when a2 == "":
@@ -204,6 +205,20 @@ public sealed class DashboardServer : IDisposable
                 {
                     var b = await Body<VersionRequest>(req);
                     await Reply(res, await RunOp($"Switching {b.Id} to {b.Series}", (p, ct) => _backend.SetActiveVersionAsync(b.Id, b.Series, p, ct)));
+                    return;
+                }
+                case ("POST", "versions") when a2 == "update":
+                {
+                    var b = await Body<VersionRequest>(req);
+                    await Reply(res, await RunOp($"Updating {b.Id} {b.Series}", (p, ct) => _backend.UpdateVersionAsync(b.Id, b.Series, p, ct)));
+                    return;
+                }
+                case ("POST", "versions") when a2 == "import-apache":
+                {
+                    // The browser sends the zip as the raw request body; its name rides in the query string.
+                    var name = req.QueryString["name"] ?? "";
+                    if (req.ContentLength64 > Stack.MaxImportBytes) { await SendAsync(res, 413, Err("That file is far bigger than an Apache download.")); return; }
+                    await Reply(res, await RunOp("Installing Apache from a file", (p, ct) => _backend.ImportApacheAsync(name, req.InputStream, p, ct)));
                     return;
                 }
                 case ("POST", "versions") when a2 == "remove":
@@ -260,6 +275,29 @@ public sealed class DashboardServer : IDisposable
                     return;
                 }
 
+                case ("GET", "ai"):
+                    await SendAsync(res, 200, _backend.GetAi());
+                    return;
+                case ("PUT", "ai") when a2 == "":
+                {
+                    if (req.ContentLength64 > MaxAiBody) { await SendAsync(res, 413, Err("That request is too large.")); return; }
+                    _backend.SaveAi(await Body<AiSaveInput>(req));
+                    await SendAsync(res, 200, _backend.GetAi());
+                    return;
+                }
+                case ("POST", "ai") when a2 == "test":
+                {
+                    var b = req.HasEntityBody ? await Body<AiTestRequest>(req) : new AiTestRequest(null);
+                    await SendAsync(res, 200, await _backend.TestAiAsync(b.Which ?? AiService.Primary, _cts.Token));
+                    return;
+                }
+                case ("POST", "ai") when a2 == "explain":
+                {
+                    if (req.ContentLength64 > MaxAiBody) { await SendAsync(res, 413, Err("That request is too large.")); return; }
+                    await SendAsync(res, 200, await _backend.ExplainAsync(await Body<ExplainRequest>(req), _cts.Token));
+                    return;
+                }
+
                 case ("POST", "hosts") when a2 == "grant":
                     await Reply(res, await RunOp("Granting hosts-file access", (p, ct) => _backend.GrantHostsAccessAsync(p, ct)));
                     return;
@@ -267,8 +305,12 @@ public sealed class DashboardServer : IDisposable
             await SendAsync(res, 404, Err("Unknown endpoint"));
         }
         catch (JsonException) { await TrySend(res, 400, Err("Malformed request body")); }
+        catch (AiException ex) { await TrySend(res, ex.Busy ? 409 : 400, Err(ex.Message)); }   // a provider problem, worded for the person
+        catch (ArgumentException ex) { await TrySend(res, 400, Err(ex.Message)); }              // input the person can fix
         catch (Exception ex) { await TrySend(res, 500, Err(ex.Message)); }
     }
+
+    const long MaxAiBody = 256 * 1024;
 
     static async Task<T> Body<T>(HttpListenerRequest r) =>
         await JsonSerializer.DeserializeAsync<T>(r.InputStream, Json) ?? throw new JsonException("empty body");

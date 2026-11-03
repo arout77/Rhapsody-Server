@@ -48,8 +48,8 @@ public static class Catalog
         "https://github.com/axllent/mailpit/releases/latest/download/mailpit-windows-amd64.zip",
         PackageKind.Zip, "mailpit.exe");
 
-    public static readonly Package PhpMyAdmin = new("phpmyadmin", "phpMyAdmin", "5.2.1", "5.2.1",
-        "https://files.phpmyadmin.net/phpMyAdmin/5.2.1/phpMyAdmin-5.2.1-all-languages.zip",
+    public static readonly Package PhpMyAdmin = new("phpmyadmin", "phpMyAdmin", "5.2.3", "5.2.3",
+        "https://files.phpmyadmin.net/phpMyAdmin/5.2.3/phpMyAdmin-5.2.3-all-languages.zip",
         PackageKind.Zip, "index.php");
 
     public static readonly Package Mkcert = new("mkcert", "mkcert", "1.4.4", "1.4.4",

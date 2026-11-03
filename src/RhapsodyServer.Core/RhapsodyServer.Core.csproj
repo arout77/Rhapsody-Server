@@ -9,5 +9,6 @@
     <EmbeddedResource Include="Web\index.html" LogicalName="index.html" />
     <EmbeddedResource Include="Web\assets\logo.png" LogicalName="assets/logo.png" />
     <EmbeddedResource Include="Web\assets\icon.png" LogicalName="assets/icon.png" />
+    <EmbeddedResource Include="Ai\providers.json" LogicalName="ai/providers.json" />
   </ItemGroup>
 </Project>

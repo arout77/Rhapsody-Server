@@ -1,6 +1,36 @@
+using System.Net;
+using System.Text;
 using System.Text.RegularExpressions;
 using RhapsodyServer.Core;
+using RhapsodyServer.Core.Ai;
 using RhapsodyServer.Core.Web;
+
+/// <summary>Not encryption: just enough for tests to prove the key store never writes a key in the clear.</summary>
+sealed class XorProtector : ISecretProtector
+{
+    public byte[] Protect(byte[] plain) => plain.Select(b => (byte)(b ^ 0x5A)).Reverse().ToArray();
+    public byte[] Unprotect(byte[] protectedBytes) => protectedBytes.Reverse().Select(b => (byte)(b ^ 0x5A)).ToArray();
+}
+
+/// <summary>Stands in for the internet: records what an AI provider would have received and answers from a script.</summary>
+sealed class StubAiHandler : HttpMessageHandler
+{
+    public readonly List<(string Url, string? Auth, string Body)> Requests = new();
+    public Func<int, HttpResponseMessage>? Script;   // call number (1-based) -> response; null = a normal answer
+    public int DelayMs;
+    public string Answer = "The `opcache` extension isn't loaded for PHP 8.5.\n\n- Open **Modules** and check it is on.";
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        var body = request.Content == null ? "" : await request.Content.ReadAsStringAsync(ct);
+        int n;
+        lock (Requests) { Requests.Add((request.RequestUri!.ToString(), request.Headers.Authorization?.ToString(), body)); n = Requests.Count; }
+        if (DelayMs > 0) await Task.Delay(DelayMs, ct);
+        if (Script != null) return Script(n);
+        var json = System.Text.Json.JsonSerializer.Serialize(new { choices = new[] { new { message = new { role = "assistant", content = Answer }, finish_reason = "stop" } } });
+        return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+    }
+}
 
 /// <summary>In-memory stand-in for the real stack: realistic data, small delays, progress messages.</summary>
 sealed class FakeBackend : IDashboardBackend
@@ -9,7 +39,24 @@ sealed class FakeBackend : IDashboardBackend
     public event Action? ProfileChanged;
     public bool Profiling;
     public readonly RhapsodyServer.Core.Profiling.ProfileStore Store = new();
-    public FakeBackend() { Store.Changed += () => ProfileChanged?.Invoke(); }
+    public readonly StubAiHandler AiNet = new();
+    public readonly AiService AiSvc;
+    readonly AiHelper _ai;
+    public readonly string AiDir = Path.Combine(Path.GetTempPath(), "rhapsody-server-ai-" + Guid.NewGuid().ToString("N")[..8]);
+    public readonly AiSettings AiSettingsState = new();
+    public FakeBackend()
+    {
+        Store.Changed += () => ProfileChanged?.Invoke();
+        Directory.CreateDirectory(AiDir);
+        AiSvc = new AiService(AiSettingsState, () => { }, new AiKeyStore(Path.Combine(AiDir, "ai-keys.json"), new XorProtector()),
+            null, new AiClient(new HttpClient(AiNet)));
+        _ai = new AiHelper(AiSvc, text => "Web server selected: " + _web + "\nDefault PHP: " + _active["php"], ReadLog, () => new[] { "fake-secret-token-123" });
+    }
+
+    public AiConfigDto GetAi() => _ai.Config();
+    public void SaveAi(AiSaveInput input) => _ai.Save(input);
+    public Task<AiTestResult> TestAiAsync(string which, CancellationToken ct) => _ai.TestAsync(which, ct);
+    public Task<AiAnswerDto> ExplainAsync(ExplainRequest req, CancellationToken ct) => _ai.ExplainAsync(req, ct);
     public int StepMs = 120;
     public bool HostsWritable;
 
@@ -184,7 +231,8 @@ sealed class FakeBackend : IDashboardBackend
                     : kv.Key == "mariadb" ? "Each version keeps its own databases, so switching never touches your data." : "Used when it is your web server.",
                 false,
                 kv.Value.Select(r => new VersionDto(r.Series, r.Version, r.Installed, r.Bundled, r.Available, _active[kv.Key] == r.Series,
-                    r.Installed && _active[kv.Key] != r.Series && !(kv.Key == "php" && _sites.Any(s => s.Php == r.Series)))).ToArray())).ToArray();
+                    r.Installed && _active[kv.Key] != r.Series && !(kv.Key == "php" && _sites.Any(s => s.Php == r.Series)),
+                    r.Installed && Stack.UpdatableIds.Contains(kv.Key) && r.Version == "2.4.63" ? "2.4.66" : null)).ToArray())).ToArray();
     }
 
     public async Task StartAllAsync(IProgress<string> p, CancellationToken ct)
@@ -218,8 +266,10 @@ sealed class FakeBackend : IDashboardBackend
     public async Task RemoveSiteAsync(string name, IProgress<string> p, CancellationToken ct)
     { await Step(p, "Updating config..."); lock (_g) _sites.RemoveAll(s => s.Name == name); Fire(); }
 
-    public async Task ScaffoldAsync(string name, string php, IProgress<string> p, CancellationToken ct)
+    public ScaffoldRequestDto? LastScaffold;
+    public async Task ScaffoldAsync(ScaffoldRequestDto r, IProgress<string> p, CancellationToken ct)
     {
+        LastScaffold = r; var name = r.Name; var php = r.Php;
         await Step(p, "Creating project from arout/rhapsody-app...");
         if (name == "fail") throw new InvalidOperationException("composer create-project failed: package arout/rhapsody-app was not found");
         await Step(p, $"Creating database {name.Replace('-', '_')}...");
@@ -245,6 +295,25 @@ sealed class FakeBackend : IDashboardBackend
 
     public async Task RemoveVersionAsync(string id, string series, IProgress<string> p, CancellationToken ct)
     { await Step(p, "Removing..."); lock (_g) Find(id, series).Installed = false; Fire(); }
+
+    public string? LastImportName; public long LastImportBytes;
+    public async Task UpdateVersionAsync(string id, string series, IProgress<string> p, CancellationToken ct)
+    {
+        if (!Stack.UpdatableIds.Contains(id)) throw new ArgumentException($"{id} can't be updated in place.");
+        foreach (var pct in new[] { 30, 100 }) await Step(p, $"Downloading {id} {series}: {pct}%");
+        lock (_g) { var r = Find(id, series); r.Version = r.Version == "2.4.63" ? "2.4.66" : r.Version; }
+        Fire();
+    }
+
+    public async Task ImportApacheAsync(string fileName, Stream data, IProgress<string> p, CancellationToken ct)
+    {
+        var ver = ApacheResolver.VersionFromArchiveName(fileName) ?? throw new ArgumentException("That doesn't look like an Apache Lounge download.");
+        using var ms = new MemoryStream(); await data.CopyToAsync(ms, ct);
+        LastImportName = fileName; LastImportBytes = ms.Length;
+        await Step(p, $"Installing Apache {ver}...");
+        lock (_g) { var r = Find("apache", VersionUtil.Series(ver)); r.Version = ver; r.Installed = true; }
+        Fire();
+    }
 
     public async Task GrantHostsAccessAsync(IProgress<string> p, CancellationToken ct)
     { await Step(p, "Waiting for Windows approval..."); HostsWritable = true; Fire(); }

@@ -2,7 +2,11 @@ using System.Text.RegularExpressions;
 
 namespace RhapsodyServer.Core;
 
-public sealed record ScaffoldRequest(string Name, string Php, string? ParentDir = null, string? Package = null);
+/// <param name="DbName">Database to create. Blank = the site name with underscores.</param>
+/// <param name="DbUser">Database user. Blank = root, which has no password in this stack.</param>
+/// <param name="DbPass">Password for a non-root user.</param>
+public sealed record ScaffoldRequest(string Name, string Php, string? ParentDir = null, string? Package = null,
+    string? DbName = null, string? DbUser = null, string? DbPass = null);
 
 /// <summary>
 /// One action: composer create-project, database, .env, vhost, certificate, hosts entry, reload.
@@ -52,16 +56,17 @@ public static class RhapsodyScaffold
     public static string NewAppKey() => Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(64)).ToLowerInvariant();
 
     /// <summary>The keys Rhapsody's .env uses, pointed at this stack. Mail goes to Mailpit; DB and Redis have no password.</summary>
-    public static Dictionary<string, string> EnvValues(Settings s, string siteName, string domain) => new()
+    public static Dictionary<string, string> EnvValues(Settings s, string siteName, string domain,
+        string? dbName = null, string? dbUser = null, string? dbPass = null, string? appKey = null) => new()
     {
         ["APP_URL"] = $"https://{domain}",
         ["APP_NAME"] = TitleOf(siteName),
-        ["APP_KEY"] = NewAppKey(),
+        ["APP_KEY"] = appKey ?? NewAppKey(),
         ["DB_HOST"] = "127.0.0.1",          // not "localhost": on Windows that can try IPv6 first and stall
         ["DB_PORT"] = s.MariaDbPort.ToString(),
-        ["DB_NAME"] = DbName(siteName),
-        ["DB_USER"] = "root",
-        ["DB_PASS"] = "",
+        ["DB_NAME"] = string.IsNullOrWhiteSpace(dbName) ? DbName(siteName) : dbName,
+        ["DB_USER"] = string.IsNullOrWhiteSpace(dbUser) ? "root" : dbUser,
+        ["DB_PASS"] = dbPass ?? "",
         ["DB_DRIVER"] = "mysql",
         ["MAIL_TRANSPORT"] = "smtp",
         ["MAIL_HOST"] = "127.0.0.1",
@@ -75,11 +80,48 @@ public static class RhapsodyScaffold
         ["REDIS_PASSWORD"] = ""
     };
 
+    static readonly Regex DbIdent = new("^[A-Za-z0-9_]{1,64}$");
+    static readonly Regex DbUserRx = new("^[A-Za-z0-9_]{1,32}$");
+
+    /// <summary>SQL for a string literal in single quotes.</summary>
+    public static string SqlString(string v) => "'" + v.Replace("\\", "\\\\").Replace("'", "''") + "'";
+
+    /// <summary>
+    /// What to run, as root, so the database (and the user, when it isn't root) exist before anything connects to them.
+    /// Re-running is harmless: databases and users are only created when missing, and the user's password is set to the given one.
+    /// </summary>
+    public static string DatabaseSql(string db, string user, string pass)
+    {
+        var sql = $"CREATE DATABASE IF NOT EXISTS `{db}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;";
+        if (user == "root") return sql;
+        var hosts = new[] { "127.0.0.1", "localhost" };
+        foreach (var h in hosts)
+            sql += $" CREATE USER IF NOT EXISTS {SqlString(user)}@{SqlString(h)} IDENTIFIED BY {SqlString(pass)};" +
+                   $" ALTER USER {SqlString(user)}@{SqlString(h)} IDENTIFIED BY {SqlString(pass)};" +
+                   $" GRANT ALL PRIVILEGES ON `{db}`.* TO {SqlString(user)}@{SqlString(h)};";
+        return sql + " FLUSH PRIVILEGES;";
+    }
+
+    /// <summary>Checks the optional database fields and fills in the defaults.</summary>
+    public static (string Db, string User, string Pass) ResolveDb(ScaffoldRequest req)
+    {
+        var db = string.IsNullOrWhiteSpace(req.DbName) ? DbName(req.Name) : req.DbName.Trim();
+        var user = string.IsNullOrWhiteSpace(req.DbUser) ? "root" : req.DbUser.Trim();
+        var pass = req.DbPass ?? "";
+        if (!DbIdent.IsMatch(db)) throw new ArgumentException("Database name: letters, digits and underscores only (up to 64).");
+        if (!DbUserRx.IsMatch(user)) throw new ArgumentException("Database user: letters, digits and underscores only (up to 32).");
+        if (pass.Any(char.IsControl)) throw new ArgumentException("The database password can't contain line breaks or control characters.");
+        if (user == "root" && pass.Length > 0)
+            throw new ArgumentException("root has no password in Rhapsody Server. Leave the password blank, or choose another database user.");
+        return (db, user, pass);
+    }
+
     public static async Task<Site> RunAsync(Stack stack, ScaffoldRequest req, IProgress<string>? p = null, CancellationToken ct = default)
     {
         var s = stack.Settings;
         if (!Stack.NameRx.IsMatch(req.Name))
             throw new ArgumentException("Site name: lowercase letters, digits and hyphens only (e.g. 'my-app').");
+        var (db, dbUser, dbPass) = ResolveDb(req);
 
         var parent = req.ParentDir ?? s.ResolveSitesRoot();
         var dir = Path.Combine(parent, req.Name);
@@ -91,29 +133,37 @@ public static class RhapsodyScaffold
         await stack.EnsurePhpAsync(req.Php, p, ct);
         await stack.Installer.EnsureAsync(Catalog.Composer, p, ct);
 
-        p?.Report($"Creating project from {package}...");
-        var r = await ProcessRunner.RunAsync(
-            stack.PhpExe(req.Php),
-            new[] { stack.Installer.PathOf(Catalog.Composer), "create-project", package, dir, "--no-interaction", "--prefer-dist" },
-            parent, stack.PhpEnv(req.Php, forComposer: true), TimeSpan.FromMinutes(15), ct);
-        if (!r.Ok) throw new InvalidOperationException($"composer create-project failed (exit code {r.ExitCode}):\n" + r.Output.Trim());
+        // The skeleton's own install scripts run database migrations (Phinx) while composer is still creating the project,
+        // before there is a .env to read. So the database has to be up, created and reachable first, and the
+        // credentials have to reach those scripts as environment variables (Phinx and dotenv both honour them over an empty .env).
+        p?.Report("Starting MariaDB...");
+        await stack.StartServiceAsync("mariadb", p, ct);
 
-        p?.Report("Starting services...");
-        await stack.StartAllAsync(p, ct);
-
-        var db = DbName(req.Name);
         p?.Report($"Creating database {db}...");
-        r = await ProcessRunner.RunAsync(stack.MariaDbCli(),
-            new[] { "-h127.0.0.1", $"-P{s.MariaDbPort}", "-uroot", "-e",
-                    $"CREATE DATABASE IF NOT EXISTS `{db}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci" },
+        var r = await ProcessRunner.RunAsync(stack.MariaDbCli(),
+            new[] { "-h127.0.0.1", $"-P{s.MariaDbPort}", "-uroot", "-e", DatabaseSql(db, dbUser, dbPass) },
             ct: ct);
         if (!r.Ok) throw new InvalidOperationException("Creating the database failed:\n" + r.Output);
+
+        var values = EnvValues(s, req.Name, stack.Domain(req.Name), db, dbUser, dbPass);
+        var env = stack.PhpEnv(req.Php, forComposer: true).ToDictionary(kv => kv.Key, kv => kv.Value);
+        foreach (var (k, v) in values) env[k] = v;
+
+        p?.Report($"Creating project from {package}...");
+        r = await ProcessRunner.RunAsync(
+            stack.PhpExe(req.Php),
+            new[] { stack.Installer.PathOf(Catalog.Composer), "create-project", package, dir, "--no-interaction", "--prefer-dist" },
+            parent, env, TimeSpan.FromMinutes(15), ct);
+        if (!r.Ok) throw new InvalidOperationException($"composer create-project failed (exit code {r.ExitCode}):\n" + r.Output.Trim());
 
         var envPath = Path.Combine(dir, ".env");
         var example = Path.Combine(dir, ".env.example");
         if (!File.Exists(envPath) && File.Exists(example)) File.Copy(example, envPath);
-        var env = File.Exists(envPath) ? File.ReadAllText(envPath) : "";
-        File.WriteAllText(envPath, UpsertEnv(env, EnvValues(s, req.Name, stack.Domain(req.Name))));
+        var existing = File.Exists(envPath) ? File.ReadAllText(envPath) : "";
+        File.WriteAllText(envPath, UpsertEnv(existing, values));   // same values the install scripts just used, including APP_KEY
+
+        p?.Report("Starting services...");
+        await stack.StartAllAsync(p, ct);
 
         p?.Report("Registering site...");
         // Rhapsody's front controller (index.php) is in the project root, not in public/, so the docroot is the root.

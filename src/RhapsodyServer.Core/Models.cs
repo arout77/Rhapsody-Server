@@ -58,6 +58,9 @@ public sealed class Settings
     public bool ProfilingEnabled { get; set; }
     public int MariaDbInternalPort { get; set; } = 3316;
 
+    /// <summary>The optional AI helper ("Explain this error"). Off until the person turns it on.</summary>
+    public Ai.AiSettings Ai { get; set; } = new();
+
     public int UiPort { get; set; } = 7766;
     public string UiToken { get; set; } = "";   // generated once; lets a bookmarked dashboard keep working
 

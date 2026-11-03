@@ -16,6 +16,27 @@ public static class ApacheResolver
         @"href=""(?<href>[^""]*?/binaries/httpd-(?<ver>\d+\.\d+\.\d+)-(?<build>\d+)-win64-VS(?<vs>\d+)\.zip)""",
         RegexOptions.IgnoreCase);
 
+    static readonly Regex FileRx = new(@"^httpd-(?<ver>\d+\.\d+\.\d+)(?:-\d+)?-win(?:64|32)(?:-V[SC]\d+)?\.zip$", RegexOptions.IgnoreCase);
+
+    /// <summary>"httpd-2.4.66-251206-win64-VS17.zip" -> "2.4.66". Null when the name isn't an Apache Lounge download.</summary>
+    public static string? VersionFromArchiveName(string fileName)
+    {
+        var name = (fileName ?? "").Replace('\\', '/');
+        var m = FileRx.Match(name[(name.LastIndexOf('/') + 1)..]);   // same on every OS: a pasted Windows path still works
+        return m.Success ? m.Groups["ver"].Value : null;
+    }
+
+    /// <summary>True when the zip has the layout Apache Lounge uses: Apache24/bin/httpd.exe.</summary>
+    public static bool LooksLikeApacheZip(string zipPath)
+    {
+        try
+        {
+            using var z = System.IO.Compression.ZipFile.OpenRead(zipPath);
+            return z.Entries.Any(e => e.FullName.Equals("Apache24/bin/httpd.exe", StringComparison.OrdinalIgnoreCase));
+        }
+        catch (InvalidDataException) { return false; }
+    }
+
     /// <summary>One package per 2.x series: newest version, and the newest Visual Studio build of it.</summary>
     public static IReadOnlyList<Package> FromDownloadPage(string html) =>
         Rx.Matches(html)
