@@ -9,7 +9,7 @@ using RhapsodyServer.Core.Ai;
 namespace RhapsodyServer.Core.Web;
 
 /// <summary>
-/// The dashboard's HTTP server. Started lazily (only when you open the dashboard), bound to 127.0.0.1 only.
+/// The dashboard's HTTP server. Started lazily (only when you open the dashboard), bound to loopback only (localhost / 127.0.0.1).
 ///
 /// A local web server that can start processes is a target for any web page you happen to visit, so:
 ///  - every /api request needs the per-install token (header; the SSE stream also accepts ?t=)
@@ -32,7 +32,7 @@ public sealed class DashboardServer : IDisposable
     static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     public int Port { get; private set; }
-    public string Url => $"http://127.0.0.1:{Port}/";
+    public string Url => $"http://localhost:{Port}/";
     /// <summary>What the tray opens. The token rides in the fragment, which browsers never send to servers.</summary>
     public string OpenUrl => $"{Url}#t={_token}";
 
@@ -68,8 +68,8 @@ public sealed class DashboardServer : IDisposable
     {
         _listener.Close();
         _listener = new HttpListener();
-        _listener.Prefixes.Add(Url);
-        _listener.Prefixes.Add($"http://localhost:{Port}/");   // both names work without admin rights
+        _listener.Prefixes.Add(Url);                              // http://localhost:PORT/  (the address we show)
+        _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");      // old bookmarks keep working; neither needs admin rights
         _listener.Start();
     }
 
@@ -184,6 +184,9 @@ public sealed class DashboardServer : IDisposable
                     await Reply(res, await RunOp($"Switching {a2} to PHP {b.Php}", (p, ct) => _backend.SetSitePhpAsync(a2, b.Php, p, ct)));
                     return;
                 }
+                case ("POST", "sites") when a3 == "check" && a2 != "":
+                    await SendAsync(res, 200, new { report = await _backend.CheckSiteAsync(a2, _cts.Token) });
+                    return;
                 case ("DELETE", "sites") when a2 != "":
                     await Reply(res, await RunOp("Removing site", (p, ct) => _backend.RemoveSiteAsync(a2, p, ct)));
                     return;
@@ -261,6 +264,14 @@ public sealed class DashboardServer : IDisposable
                     return;
                 }
 
+                case ("POST", "php") when a2 == "ini":
+                    _backend.OpenPhpIni(await Body<PhpIniRequest>(req));
+                    await SendAsync(res, 200, new { ok = true });
+                    return;
+                case ("POST", "php") when a3 == "restart" && Regex.IsMatch(a2, @"^\d+\.\d+$"):
+                    await Reply(res, await RunOp($"Restarting PHP {a2}", (p, ct) => _backend.RestartPhpAsync(a2, p, ct)));
+                    return;
+
                 case ("POST", "pick-folder"):
                 {
                     if (!_backend.CanPickFolder) { await SendAsync(res, 501, Err("This host can't show a folder window. Type the path instead.")); return; }
@@ -295,6 +306,20 @@ public sealed class DashboardServer : IDisposable
                     await SendAsync(res, 200, await _backend.TestAiAsync(b.Which ?? AiService.Primary, _cts.Token));
                     return;
                 }
+                case ("POST", "ai") when a2 == "ask":
+                {
+                    if (req.ContentLength64 > MaxAiBody) { await SendAsync(res, 413, Err("That request is too large.")); return; }
+                    var b = await Body<AiAskRequest>(req);
+                    var askId = b.AskId ?? "";
+                    // Each lookup the assistant starts is announced on the event stream, tagged with the page's own id for this question.
+                    var progress = new Sink(m => Broadcast("ai", JsonSerializer.Serialize(new { id = askId, text = m }, Json)));
+                    await SendAsync(res, 200, await _backend.AskAiAsync(b, progress, _cts.Token));
+                    return;
+                }
+                case ("POST", "ai") when a2 == "cancel":
+                    _backend.CancelAi();
+                    await SendAsync(res, 200, new { ok = true });
+                    return;
                 case ("POST", "ai") when a2 == "explain":
                 {
                     if (req.ContentLength64 > MaxAiBody) { await SendAsync(res, 413, Err("That request is too large.")); return; }

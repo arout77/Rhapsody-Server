@@ -220,14 +220,28 @@ public sealed class Stack : IDisposable
         WritePhpIni(branch);
     }
 
+    /// <summary>The php.ini that PHP really loads: PhpEnv points PHPRC at its folder.</summary>
+    public string PhpIniPath(string branch) => Path.Combine(Paths.Etc, "php", branch, "php.ini");
+
+    /// <summary>The path of this PHP's php.ini, writing a fresh one first if it isn't there yet. Throws if that PHP isn't installed.</summary>
+    public string EnsurePhpIni(string branch)
+    {
+        if (!IsSeriesInstalled("php", branch)) throw new InvalidOperationException($"PHP {branch} isn't installed.");
+        if (!File.Exists(PhpIniPath(branch))) WritePhpIni(branch);
+        return PhpIniPath(branch);
+    }
+
     void WritePhpIni(string branch)
     {
         var etc = Path.Combine(Paths.Etc, "php", branch);
         var tmp = Path.Combine(Paths.Data, "php-tmp");
         Directory.CreateDirectory(etc);
         Directory.CreateDirectory(Path.Combine(tmp, "sessions"));
-        File.WriteAllText(Path.Combine(etc, "php.ini"),
-            ConfigWriter.PhpIni(branch, PhpDir(branch), tmp, Settings, PhpIniOptionsFor(branch)));
+        var file = PhpIniPath(branch);
+        // Whatever the person wrote under the "Your settings" line is carried into the new file.
+        string? mine = null;
+        try { if (File.Exists(file)) mine = ConfigWriter.ExtractPhpIniUserBlock(File.ReadAllText(file)); } catch (IOException) { }
+        File.WriteAllText(file, ConfigWriter.PhpIni(branch, PhpDir(branch), tmp, Settings, PhpIniOptionsFor(branch), mine));
     }
 
     /// <summary>
@@ -268,7 +282,12 @@ public sealed class Stack : IDisposable
         Save();
         WritePhpIni(branch);
 
-        // Running PHP workers read php.ini once, when they start.
+        await RestartPhpAsync(branch, p, ct);
+    }
+
+    /// <summary>Running PHP workers read php.ini once, when they start: restart this version's so a changed php.ini takes effect. Does nothing if none are running.</summary>
+    public async Task RestartPhpAsync(string branch, IProgress<string>? p = null, CancellationToken ct = default)
+    {
         var workers = Supervisor.All.Where(w => w.Spec.Id.StartsWith($"php-{branch}-") && w.State is ServiceState.Running or ServiceState.Starting).ToList();
         if (workers.Count > 0)
         {
@@ -689,6 +708,10 @@ public sealed class Stack : IDisposable
         var specs = BuildSiteSpecs();
         foreach (var s in specs.Where(s => s.Https)) await certs.EnsureAsync(s.Domain, ct);
 
+        var defaultRoot = Path.Combine(Paths.Etc, "default-site");
+        Directory.CreateDirectory(defaultRoot);
+        File.WriteAllText(Path.Combine(defaultRoot, "index.html"), ConfigWriter.DefaultPageHtml(specs.Select(x => x.Domain)));
+
         var prefix = Path.Combine(Paths.Etc, WebServerId);
         Directory.CreateDirectory(Path.Combine(prefix, "logs"));
         Directory.CreateDirectory(Path.Combine(prefix, "temp"));
@@ -698,12 +721,12 @@ public sealed class Stack : IDisposable
             var fcgi = Path.Combine(prefix, "fastcgi_params");
             File.WriteAllText(fcgi, ConfigWriter.FastCgiParams);
             File.WriteAllText(Path.Combine(prefix, "nginx.conf"),
-                ConfigWriter.Nginx(Settings, specs, Installer.DirOf(ActivePkg("nginx")), prefix, fcgi, Settings.ProfilingEnabled));
+                ConfigWriter.Nginx(Settings, specs, Installer.DirOf(ActivePkg("nginx")), prefix, fcgi, Settings.ProfilingEnabled, defaultRoot));
         }
         else
         {
             File.WriteAllText(Path.Combine(prefix, "httpd.conf"),
-                ConfigWriter.Apache(Settings, specs, Installer.DirOf(ActivePkg("apache")), prefix, Settings.ProfilingEnabled, ApacheOptionalModules()));
+                ConfigWriter.Apache(Settings, specs, Installer.DirOf(ActivePkg("apache")), prefix, Settings.ProfilingEnabled, ApacheOptionalModules(), defaultRoot));
         }
         WritePhpMyAdminConfig();
     }
@@ -731,17 +754,10 @@ public sealed class Stack : IDisposable
         var svc = Supervisor.Get(WebServerId);
         if (svc is not { State: ServiceState.Running }) return;
 
-        if (Settings.WebServer == WebServerKind.Nginx)
-        {
-            var spec = svc.Spec;
-            var r = await ProcessRunner.RunAsync(spec.Exe, spec.Args.Concat(new[] { "-s", "reload" }).ToArray(), spec.WorkDir, ct: ct);
-            if (!r.Ok) throw new InvalidOperationException("nginx reload failed:\n" + r.Output);
-        }
-        else
-        {
-            await svc.StopAsync();                       // Apache has no console-mode reload on Windows
-            await Supervisor.Register(SpecFor(WebServerId)).StartAsync(ct: ct);
-        }
+        // A full restart for both. nginx's "-s reload" on Windows leaves the old worker processes alive and still accepting
+        // connections, so a newly added site can keep getting the old configuration. Restarting takes about a second.
+        await svc.StopAsync();
+        await Supervisor.Register(SpecFor(WebServerId)).StartAsync(ct: ct);
     }
 
     public async Task SwitchWebServerAsync(WebServerKind kind, IProgress<string>? p = null, CancellationToken ct = default)

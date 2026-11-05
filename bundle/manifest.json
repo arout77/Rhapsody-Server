@@ -1,0 +1,105 @@
+{
+  "Created": "2026-11-04T06:29:03.0719214Z",
+  "Entries": [
+    {
+      "Id": "php",
+      "Series": "8.5",
+      "Version": "8.5.12-1",
+      "File": "php-8.5.12-1.zip",
+      "Sha256": "2a36a2edcb7a5b9252f638fd5e4cf84d7f6e066092654220dc0b63e5cf4e9723",
+      "Kind": "Zip",
+      "Exe": "php-cgi.exe",
+      "InnerRoot": null
+    },
+    {
+      "Id": "apache",
+      "Series": "2.4",
+      "Version": "2.4.69",
+      "File": "apache-2.4.69.zip",
+      "Sha256": "77d715d0d9cee731e2251e7ddc2090a7a8e6d41fedef2e9827cd918593c5a652",
+      "Kind": "Zip",
+      "Exe": "bin/httpd.exe",
+      "InnerRoot": "Apache24"
+    },
+    {
+      "Id": "nginx",
+      "Series": "1.30",
+      "Version": "1.30.6",
+      "File": "nginx-1.30.6.zip",
+      "Sha256": "c6ee35edb0a861063323f709192ae50d1eefaf2ea7d00678bd2b22d8542dc61e",
+      "Kind": "Zip",
+      "Exe": "nginx.exe",
+      "InnerRoot": null
+    },
+    {
+      "Id": "mariadb",
+      "Series": "11.8",
+      "Version": "11.8.9",
+      "File": "mariadb-11.8.9.zip",
+      "Sha256": "830c46727d9278eae212ae3eca44eeb9e71b2a68704e95f344a64fba7b1963f5",
+      "Kind": "Zip",
+      "Exe": "bin/mariadbd.exe",
+      "InnerRoot": null
+    },
+    {
+      "Id": "redis",
+      "Series": "5.0.14.1",
+      "Version": "5.0.14.1",
+      "File": "redis-5.0.14.1.zip",
+      "Sha256": "018ea18a35876383cbb5f4cd0258adfc87747cf9d619bce1cf73a2e36f720ccf",
+      "Kind": "Zip",
+      "Exe": "redis-server.exe",
+      "InnerRoot": null
+    },
+    {
+      "Id": "mailpit",
+      "Series": "latest",
+      "Version": "latest",
+      "File": "mailpit-latest.zip",
+      "Sha256": "47122dd828ff80dcaef62b2952c478b178afadadf066c990489608e537121bfd",
+      "Kind": "Zip",
+      "Exe": "mailpit.exe",
+      "InnerRoot": null
+    },
+    {
+      "Id": "phpmyadmin",
+      "Series": "5.2.3",
+      "Version": "5.2.3",
+      "File": "phpmyadmin-5.2.3.zip",
+      "Sha256": "2d2e13c735366d318425c78e4ee2cc8fc648d77faba3ddea2cd516e43885733f",
+      "Kind": "Zip",
+      "Exe": "index.php",
+      "InnerRoot": null
+    },
+    {
+      "Id": "mkcert",
+      "Series": "1.4.4",
+      "Version": "1.4.4",
+      "File": "mkcert.exe",
+      "Sha256": "d2660b50a9ed59eada480750561c96abc2ed4c9a38c6a24d93e30e0977631398",
+      "Kind": "SingleFile",
+      "Exe": "mkcert.exe",
+      "InnerRoot": null
+    },
+    {
+      "Id": "composer",
+      "Series": "stable",
+      "Version": "stable",
+      "File": "composer.phar",
+      "Sha256": "6f1b891e1d4927d62740276c540fb490e47689e19e102c49e8da849794882f8c",
+      "Kind": "SingleFile",
+      "Exe": "composer.phar",
+      "InnerRoot": null
+    },
+    {
+      "Id": "vcredist",
+      "Series": "latest",
+      "Version": "latest",
+      "File": "vc_redist.x64.exe",
+      "Sha256": "cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b",
+      "Kind": "SingleFile",
+      "Exe": "vc_redist.x64.exe",
+      "InnerRoot": null
+    }
+  ]
+}

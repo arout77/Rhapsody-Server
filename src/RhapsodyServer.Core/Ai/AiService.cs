@@ -171,6 +171,62 @@ public sealed class AiService
         return new AiTestResult(r.Provider, r.Model, r.Ms, r.Text.Length > 80 ? r.Text[..80] + "…" : r.Text);
     }, ct);
 
+    /// <summary>Stops whatever question is running (the person pressed Stop). Does nothing if none is.</summary>
+    public void CancelCurrent()
+    {
+        lock (_currentLock) _current?.Cancel();
+    }
+
+    /// <summary>The longest a whole investigation (many model calls and lookups) may take.</summary>
+    public TimeSpan RunTimeout { get; set; } = TimeSpan.FromMinutes(3);
+
+    /// <summary>
+    /// Runs the lookup-and-think loop. Same rules as a single question (off until enabled, one at a time, newest wins), and the
+    /// same backup behaviour, except that the backup takes over for the REST of the run: the conversation so far is provider-neutral.
+    /// </summary>
+    public Task<AgentResult> RunAgentAsync(AgentRequest request, IProgress<string>? progress, CancellationToken ct) => Exclusive(async t =>
+    {
+        if (!_s.Enabled) throw new AiException("AI help is turned off. Turn it on from the AI page.");
+        var main = CallFor(_s.Primary, Primary)
+            ?? throw new AiException("AI help isn't set up yet. Choose a provider and add a key on the AI page.");
+        var backup = CallFor(_s.Fallback, Fallback);
+
+        var active = main;
+        var onBackup = false;
+        string? note = null;
+
+        async Task<(ChatTurn, bool, string?)> Step(IReadOnlyList<ChatMessage> msgs, IReadOnlyList<ToolSpec> tools, CancellationToken c)
+        {
+            try
+            {
+                var turn = await _client.ChatWithToolsAsync(active, msgs, tools, AiAgent.MaxAnswerTokens, Timeout, c);
+                return (turn, onBackup, note);
+            }
+            catch (AiException first) when ((first.Retryable || first.ToolsUnsupported) && !onBackup && backup != null)
+            {
+                active = backup; onBackup = true;
+                note = $"{main.ProviderName} couldn't answer, so {backup.ProviderName} did. {first.Message}";
+                try
+                {
+                    var turn = await _client.ChatWithToolsAsync(active, msgs, tools, AiAgent.MaxAnswerTokens, Timeout, c);
+                    return (turn, true, note);
+                }
+                catch (AiException second)
+                {
+                    throw new AiException($"{first.Message}\n\nThe backup provider failed too: {second.Message}", retryable: false);
+                }
+            }
+        }
+
+        using var overall = CancellationTokenSource.CreateLinkedTokenSource(t);
+        overall.CancelAfter(RunTimeout);
+        try { return await AiAgent.RunAsync(request, Step, progress, overall.Token); }
+        catch (OperationCanceledException) when (!t.IsCancellationRequested)
+        {
+            throw new AiException($"That took longer than {(int)RunTimeout.TotalMinutes} minutes, so I stopped. Try a narrower question.", retryable: false);
+        }
+    }, ct);
+
     public Task<AiAnswer> AskAsync(string system, string user, CancellationToken ct) => Exclusive(async t =>
     {
         if (!_s.Enabled) throw new AiException("AI help is turned off. Turn it on from the AI page.");

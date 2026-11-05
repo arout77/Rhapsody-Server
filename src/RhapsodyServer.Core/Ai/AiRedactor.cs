@@ -26,8 +26,15 @@ public sealed class AiRedactor
     // Names that label a secret: DB_PASS, MAIL_PASSWORD, APP_KEY, api_key, "secret": "...", Authorization: ...
     const string Labels = @"[A-Za-z0-9_.\-]*(?:PASS(?:WORD|WD)?|PWD|SECRET|TOKEN|API[_\-]?KEY|APP[_\-]?KEY|[_\-]KEY|PRIVATE|AUTHORIZATION|CREDENTIAL|SALT|COOKIE)[A-Za-z0-9_.\-]*";
 
+    // "=>" first: PHP config arrays write 'password' => 'hunter2', and without it the separator would stop at "=" and leave the value readable.
     static readonly Regex LabelledValue = new(
-        "(?<label>[\"']?" + Labels + @"[""']?)(?<sep>\s*[=:]\s*)(?<val>""[^""\r\n]*""|'[^'\r\n]*'|[^\s""',;}]+)",
+        "(?<label>[\"']?" + Labels + @"[""']?)(?<sep>\s*(?:=>|[=:])\s*)(?<val>""[^""\r\n]*""|'[^'\r\n]*'|[^\s""',;}]+)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // For source code, where "password" is mostly a variable name ($password = $_POST['password']) and not a value: only a quoted
+    // string literal counts as a secret. Covers 'password' => 'x', $dbPass = 'x', "token": "x" and define('DB_PASS', 'x').
+    static readonly Regex LabelledLiteral = new(
+        "(?<label>[\"']?" + Labels + @"[""']?)(?<sep>\s*(?:=>|[=:,])\s*)(?<val>""[^""\r\n$]{1,}""|'[^'\r\n$]{1,}')",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     static readonly Regex HeaderLine = new(
@@ -46,7 +53,14 @@ public sealed class AiRedactor
     static readonly Regex Email = new(@"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}\b", RegexOptions.Compiled);
     static readonly Regex UserFolder = new(@"(?i)(?<pre>[A-Za-z]:[\\/]+Users[\\/]+)(?<name>[^\\/\s""':*?<>|]+)", RegexOptions.Compiled);
 
-    public string Apply(string? text)
+    public string Apply(string? text) => Apply(text, sourceCode: false);
+
+    /// <summary>
+    /// <paramref name="sourceCode"/> true is for the text of program files the assistant reads. Same scrubbing, except that a
+    /// label like "password" only hides the value when it is a quoted string literal, so that code stays readable.
+    /// Config files (.env, .ini, .yml, .json) must use the normal mode.
+    /// </summary>
+    public string Apply(string? text, bool sourceCode)
     {
         if (string.IsNullOrEmpty(text)) return "";
         var s = text;
@@ -58,7 +72,7 @@ public sealed class AiRedactor
         s = Bearer.Replace(s, m => $"{m.Groups[1].Value} {Mark}");
         s = KnownKeys.Replace(s, Mark);
         s = Base64Key.Replace(s, "base64:" + Mark);
-        s = LabelledValue.Replace(s, m => m.Groups["val"].Value == Mark ? m.Value : m.Groups["label"].Value + m.Groups["sep"].Value + Mark);
+        s = (sourceCode ? LabelledLiteral : LabelledValue).Replace(s, m => m.Groups["val"].Value == Mark ? m.Value : m.Groups["label"].Value + m.Groups["sep"].Value + Mark);
         s = CliPassword.Replace(s, "$1" + Mark);
         s = MysqlDashP.Replace(s, "$1" + Mark);
         s = LongHex.Replace(s, Mark);

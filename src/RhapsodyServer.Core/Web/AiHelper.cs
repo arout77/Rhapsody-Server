@@ -13,9 +13,48 @@ public sealed class AiHelper
     readonly Func<string, string> _describeEnvironment;   // takes the text being explained, returns the setup summary
     readonly Func<string, int, string> _readLog;
     readonly Func<IEnumerable<string?>> _knownSecrets;
+    readonly IDevContext? _dev;
 
-    public AiHelper(AiService ai, Func<string, string> describeEnvironment, Func<string, int, string> readLog, Func<IEnumerable<string?>> knownSecrets)
-    { _ai = ai; _describeEnvironment = describeEnvironment; _readLog = readLog; _knownSecrets = knownSecrets; }
+    /// <param name="dev">What the Ask assistant may look at. Null in a host that doesn't offer Ask.</param>
+    public AiHelper(AiService ai, Func<string, string> describeEnvironment, Func<string, int, string> readLog, Func<IEnumerable<string?>> knownSecrets, IDevContext? dev = null)
+    { _ai = ai; _describeEnvironment = describeEnvironment; _readLog = readLog; _knownSecrets = knownSecrets; _dev = dev; }
+
+    const int MaxQuestionChars = 2000;
+
+    public void Cancel() => _ai.CancelCurrent();
+
+    public async Task<AiAskDto> AskAsync(AiAskRequest r, IProgress<string>? progress, CancellationToken ct)
+    {
+        if (_dev == null) throw new NotSupportedException("Ask isn't available in this host.");
+        var question = (r.Question ?? "").Trim();
+        if (question.Length == 0) throw new ArgumentException("Type a question first.");
+        if (question.Length > MaxQuestionChars) throw new ArgumentException($"That question is too long ({question.Length} characters). Keep it under {MaxQuestionChars}.");
+
+        var redactor = new AiRedactor(_knownSecrets().Concat(_ai.SecretLiterals()), Environment.UserName);
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("My setup:");
+        sb.AppendLine(AiAgent.Clip(redactor.Apply(_describeEnvironment(question)), 1600));
+        sb.AppendLine();
+        if (!string.IsNullOrWhiteSpace(r.Site))
+        {
+            var site = _dev.Sites.FirstOrDefault(s => s.Name.Equals(r.Site.Trim(), StringComparison.OrdinalIgnoreCase))
+                ?? throw new ArgumentException($"There is no site called \"{r.Site}\".");
+            sb.AppendLine($"The question is about the site {site.Domain} (name \"{site.Name}\", PHP {site.Php}).");
+            sb.AppendLine();
+        }
+        sb.AppendLine("My question:");
+        sb.AppendLine("<question>");
+        sb.AppendLine(redactor.Apply(question));
+        sb.AppendLine("</question>");
+
+        var tools = DevTools.Build(_dev, redactor, r.AllowRequests);
+        var req = new AgentRequest(sb.ToString(), tools, redactor.Apply, AiAgent.SystemPrompt);
+        var res = await _ai.RunAgentAsync(req, progress, ct);
+
+        return new AiAskDto(res.Answer, res.Provider, res.Model, res.UsedFallback, res.FallbackNote,
+            res.Steps.Select(s => new AiAskStepDto(s.Number, s.Tool, s.Summary, s.Result, s.Failed)).ToArray(), res.HitLimit);
+    }
 
     public AiConfigDto Config()
     {

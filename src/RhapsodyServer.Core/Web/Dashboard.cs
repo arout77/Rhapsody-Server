@@ -18,7 +18,7 @@ public sealed record WebServerRequest(string Kind);
 
 public sealed record ModuleDto(string Name, string Description, bool Enabled, bool Locked, string? Note);
 /// <summary>PHP extensions of one installed PHP. <c>Branches</c> are the installed ones; <c>Branch</c> is the one listed.</summary>
-public sealed record PhpModulesDto(string[] Branches, string? Branch, ModuleDto[] Extensions, bool WorkersRunning);
+public sealed record PhpModulesDto(string[] Branches, string? Branch, ModuleDto[] Extensions, bool WorkersRunning, string? IniPath = null);
 /// <summary><c>Installed</c> false = nothing to list yet. <c>Serving</c> = Apache is the selected web server.</summary>
 public sealed record ApacheModulesDto(bool Installed, string? Version, bool Serving, bool Running, ModuleDto[] Modules);
 public sealed record ModulesRequest(string[] Enabled);
@@ -27,6 +27,9 @@ public sealed record VersionRequest(string Id, string Series);
 
 /// <param name="Target"><c>sites</c> (where new sites are created), <c>site</c> (one site's folder, by Name), <c>data</c> (the app's own files) or <c>logs</c>.</param>
 public sealed record OpenFolderRequest(string Target, string? Name);
+/// <param name="Branch">Which PHP's php.ini; null = the default PHP. The page never names a path.</param>
+/// <param name="Action"><c>edit</c> (open in the person's editor) or <c>reveal</c> (show it in its folder).</param>
+public sealed record PhpIniRequest(string? Branch, string Action);
 
 public sealed record AiProviderDto(string Id, string Name, string BaseUrl, string Model, bool NeedsKey, string? KeyUrl, string? Note);
 /// <summary>The AI page's state. Keys never leave the app: the page only learns whether one is saved.</summary>
@@ -36,6 +39,15 @@ public sealed record ExplainRequest(string Kind, string? Title, string? Text, st
 /// <param name="Sent">Exactly what was sent to the provider (after redaction), so the person can see it.</param>
 public sealed record AiAnswerDto(string Answer, string Provider, string Model, bool UsedFallback, string? FallbackNote, string Sent);
 public sealed record AiTestRequest(string? Which);
+
+/// <param name="Question">What the developer typed, in their own words.</param>
+/// <param name="Site">Optional: the site the question is about (narrows where the assistant looks first).</param>
+/// <param name="AllowRequests">True lets the assistant load pages of the person's sites (GET only, through the local web server).</param>
+/// <param name="AskId">Made by the page; progress events carry it so the page can tell its own question's progress from another's.</param>
+public sealed record AiAskRequest(string Question, string? Site, bool AllowRequests, string? AskId);
+/// <param name="Result">Exactly what the provider was shown for this lookup (after scrubbing).</param>
+public sealed record AiAskStepDto(int Number, string Tool, string Summary, string Result, bool Failed);
+public sealed record AiAskDto(string Answer, string Provider, string Model, bool UsedFallback, string? FallbackNote, AiAskStepDto[] Steps, bool HitLimit);
 
 /// <summary>Shows the operating system's folder chooser. Implemented by the tray app; the core library has no UI.</summary>
 public interface IFolderPicker
@@ -96,9 +108,24 @@ public interface IDashboardBackend
     /// <summary>Shows a known folder in Windows Explorer. Throws ArgumentException for an unknown target or a folder that is gone.</summary>
     void OpenFolder(OpenFolderRequest req);
 
+    /// <summary>Opens (or shows in its folder) the php.ini a PHP version really loads. Throws ArgumentException for an unknown action or a PHP that isn't installed.</summary>
+    void OpenPhpIni(PhpIniRequest req);
+    /// <summary>Restarts that PHP's workers so a changed php.ini is read. Does nothing if they aren't running.</summary>
+    Task RestartPhpAsync(string branch, IProgress<string> p, CancellationToken ct);
+
+    /// <summary>Asks the running web server for the site's home page and gathers what the server and PHP logged, as plain text for the person (or a bug report).</summary>
+    Task<string> CheckSiteAsync(string name, CancellationToken ct);
+
     // ---- optional AI helper ("Explain this"). Not operations: they don't take the busy lock.
     AiConfigDto GetAi();
     void SaveAi(Ai.AiSaveInput input);
     Task<Ai.AiTestResult> TestAiAsync(string which, CancellationToken ct);
     Task<AiAnswerDto> ExplainAsync(ExplainRequest req, CancellationToken ct);
+
+    // ---- "Ask": free-form questions the assistant answers by looking at logs, the profiler and the site's files.
+    // Default bodies so a host that doesn't offer it (a test fake) needs no change.
+    /// <param name="progress">Short present-tense lines ("Reading the nginx log…") while it works.</param>
+    Task<AiAskDto> AskAiAsync(AiAskRequest req, IProgress<string>? progress, CancellationToken ct) =>
+        throw new NotSupportedException("Ask isn't available in this host.");
+    void CancelAi() { }
 }

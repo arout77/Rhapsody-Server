@@ -38,7 +38,28 @@ sealed class TrayContext : ApplicationContext
 
         var args = Environment.GetCommandLineArgs();
         if (!args.Contains("--no-splash")) new SplashForm(TimeSpan.FromMilliseconds(1600)).Show();
+
+        // Start listening right away so the address is always live while the tray is running,
+        // and let a second launch ask this instance to open the dashboard.
+        try { StartDashboard(); } catch (Exception ex) { Balloon("Couldn't start the dashboard: " + ex.Message, ToolTipIcon.Error); }
+        ListenForSecondLaunch();
         if (args.Contains("--open")) OpenDashboard();
+    }
+
+    void ListenForSecondLaunch()
+    {
+        var bell = new EventWaitHandle(false, EventResetMode.AutoReset, Program.OpenSignalName);
+        new Thread(() =>
+        {
+            while (bell.WaitOne()) _ui.BeginInvoke(() => OpenDashboard());
+        }) { IsBackground = true, Name = "open-dashboard-signal" }.Start();
+    }
+
+    void StartDashboard()
+    {
+        if (_dash != null) return;
+        _dash = new DashboardServer(_backend, _stack.Settings.UiToken);
+        _dash.Start(_stack.Settings.UiPort);
     }
 
     /// <summary>The icon built into RhapsodyServer.exe (see ApplicationIcon in the project file).</summary>
@@ -87,8 +108,16 @@ sealed class TrayContext : ApplicationContext
 
         _menu.Items.Add(new ToolStripSeparator());
         Plain("Open sites folder", OpenSitesFolder);
+        Plain("Edit php.ini", EditPhpIni);
         Plain("Help", () => OpenDashboard("help"));
         Plain("Quit", () => _ = Quit());
+    }
+
+    /// <summary>The php.ini of the default PHP, in the person's editor (Notepad if nothing is set up for .ini files).</summary>
+    void EditPhpIni()
+    {
+        try { _backend.OpenPhpIni(new PhpIniRequest(null, "edit")); }
+        catch (Exception ex) { Balloon("Couldn't open php.ini: " + ex.Message, ToolTipIcon.Error); }
     }
 
     /// <summary>Where new sites are created. The folder is made first, because before the first site it doesn't exist yet.</summary>
@@ -107,11 +136,7 @@ sealed class TrayContext : ApplicationContext
     {
         try
         {
-            if (_dash == null)
-            {
-                _dash = new DashboardServer(_backend, _stack.Settings.UiToken);
-                _dash.Start(_stack.Settings.UiPort);   // started on first use, not at launch
-            }
+            StartDashboard();
             Shell(page == null ? _dash.OpenUrl : _dash.OpenUrl + "&go=" + page);   // the page reads &go= once, with the token
         }
         catch (Exception ex) { Balloon("Couldn't start the dashboard: " + ex.Message, ToolTipIcon.Error); }

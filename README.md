@@ -24,10 +24,10 @@ with a one-click **Rhapsody** project scaffold.
 ## Two interfaces, one engine
 
 - **Tray icon** (always there): status dots, start/stop toggles, open a site, **Open dashboard**.
-- **Dashboard** (a local web page, started only when you open it): Services (with logs), Sites (new Rhapsody site,
+- **Dashboard** (a local web page, served whenever the tray app is running): Services (with logs), Sites (new Rhapsody site,
   add existing folder with a native **Browse…** window, per-site PHP), Versions (one dropdown per tool: install / switch / remove),
-  **Modules** (turn PHP extensions and Apache modules on and off), Profiler. Default address `http://127.0.0.1:7766`;
-  bookmark it, it keeps working. The tray's "Open dashboard" supplies the access key the first time.
+  **Modules** (turn PHP extensions and Apache modules on and off), Profiler. Default address `http://localhost:7766`
+  (`127.0.0.1:7766` still works); bookmark it. If the app is quit the browser can't connect; `rhapsody://open` starts it again. The tray's "Open dashboard" supplies the access key the first time.
 
 Both drive the same `Stack` and share one operation lock, so they can't trip over each other.
 
@@ -63,6 +63,7 @@ publish.cmd               3. build RhapsodyServer.exe (self-contained, ReadyToRu
                              REFUSES to build unless the bundle is complete (PHP, Apache, nginx, MariaDB and the tools);
                              publish.cmd --no-bundle makes a dev build
 installer\rhapsody-server.iss    4. (optional) open in Inno Setup to make RhapsodyServer-Setup.exe (per-user, no admin needed)
+installer.cmd              all of the above in one go: bundle (if needed), publish, then compile the installer with Inno Setup 6
 ```
 
 Expect roughly 250-300 MB. Self-contained means users don't need to install .NET.
@@ -131,7 +132,7 @@ All covered by tests. Services bind to 127.0.0.1 only.
 
 ## What's verified (in the build sandbox)
 
-- 99 automated tests: the AI helper (redaction, key store, provider client and fallback, prompt budget, API), resolvers, bundle build and offline install, version install/switch/remove guards, config generation,
+- 104 automated tests: the AI helper (redaction, key store, provider client and fallback, prompt budget, API), resolvers, bundle build and offline install, version install/switch/remove guards, config generation,
   hosts-file merging, `.env` handling against a real Rhapsody `.env`, real child-process supervision, the HTTP API
   (auth, DNS-rebinding, cross-origin, 409 busy, error mapping) and the live event stream, plus the profiler: MySQL packet
   parsing, the proxy against a fake MariaDB, access-log tailing, config generation and the profile API.

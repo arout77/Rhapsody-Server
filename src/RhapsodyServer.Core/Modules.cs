@@ -126,8 +126,8 @@ public static class ApacheModuleCatalog
     public static readonly string[] Required =
     {
         "authz_core", "authz_host", "dir", "mime", "alias", "log_config",
-        "proxy", "proxy_fcgi", "proxy_http", "proxy_wstunnel", "proxy_balancer", "lbmethod_byrequests",
-        "slotmem_shm", "socache_shmcb", "ssl"
+        "proxy", "proxy_fcgi", "proxy_http", "proxy_wstunnel",
+        "socache_shmcb", "ssl"
     };
 
     public const string RequiredReason = "Rhapsody Server's own config uses it (PHP, HTTPS, mail inbox)";

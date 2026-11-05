@@ -164,7 +164,8 @@ sealed class FakeBackend : IDashboardBackend
         if (pick == null) return new PhpModulesDto(installed, null, Array.Empty<ModuleDto>(), false);
         var on = Ext(pick);
         return new PhpModulesDto(installed, pick, FakeExt.Select(n => new ModuleDto(n, PhpExtensions.Describe(n), on.Contains(n),
-            PhpExtensions.Essential.Contains(n), PhpExtensions.Essential.Contains(n) ? PhpExtensions.EssentialReason : null)).ToArray(), _st["nginx"] == "running");
+            PhpExtensions.Essential.Contains(n), PhpExtensions.Essential.Contains(n) ? PhpExtensions.EssentialReason : null)).ToArray(), _st["nginx"] == "running",
+            $@"C:\Users\andrew\AppData\Local\RhapsodyServer\etc\php\{pick}\php.ini");
     }
 
     public async Task SetPhpExtensionsAsync(string branch, string[] enabled, IProgress<string> p, CancellationToken ct)
@@ -177,7 +178,7 @@ sealed class FakeBackend : IDashboardBackend
     }
 
     static readonly string[] FakeApache = { "alias", "authz_core", "authz_host", "cache", "cache_disk", "deflate", "dir", "expires", "headers", "log_config",
-        "mime", "proxy", "proxy_fcgi", "proxy_http", "proxy_wstunnel", "proxy_balancer", "lbmethod_byrequests", "rewrite", "setenvif", "slotmem_shm", "socache_shmcb", "ssl" };
+        "mime", "proxy", "proxy_fcgi", "proxy_http", "proxy_wstunnel", "rewrite", "setenvif", "socache_shmcb", "ssl" };
     public readonly HashSet<string> ApacheOn = new(ApacheModuleCatalog.Defaults);
 
     public ApacheModulesDto GetApacheModules()
@@ -220,6 +221,27 @@ sealed class FakeBackend : IDashboardBackend
 
     /// <summary>Folders the page asked to open, in order. Paths come from here, so a test can prove the request never chooses one.</summary>
     public readonly List<string> Opened = new();
+    public Task<string> CheckSiteAsync(string name, CancellationToken ct) =>
+        Task.FromResult(name == "gone" ? throw new ArgumentException($"There is no site called \"{name}\".") : $"Site: {name}.test\nRequest answered: 200 OK");
+
+    /// <summary>php.ini requests as "branch:action", in order.</summary>
+    public readonly List<string> IniRequests = new();
+    public readonly List<string> Restarted = new();
+    public void OpenPhpIni(PhpIniRequest req)
+    {
+        if ((req.Action ?? "") is not ("edit" or "reveal")) throw new ArgumentException("Unknown action.");
+        string[] installed; lock (_g) installed = _v["php"].Where(r => r.Installed).Select(r => r.Series).ToArray();
+        var b = req.Branch ?? _active["php"];
+        if (!installed.Contains(b)) throw new ArgumentException($"PHP {b} isn't installed.");
+        lock (_g) IniRequests.Add($"{b}:{req.Action}");
+    }
+
+    public async Task RestartPhpAsync(string branch, IProgress<string> p, CancellationToken ct)
+    {
+        await Step(p, $"Restarting PHP {branch}...");
+        lock (_g) Restarted.Add(branch);
+    }
+
     public void OpenFolder(OpenFolderRequest req)
     {
         string path;

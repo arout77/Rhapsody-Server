@@ -30,7 +30,10 @@ public sealed class ManagedService : IDisposable
     public event Action<ManagedService>? StateChanged;
 
     Process? _proc;
-    StreamWriter? _log;
+    // Every PHP worker of a version shares one log file. Each with its own file handle used to overwrite the others lines,
+    // which is why those logs looked nearly empty. One lock and an append per line keeps every line.
+    static readonly object _fileLock = new();
+    bool _logOpen;
     volatile bool _stopping;
     readonly object _gate = new();
 
@@ -45,10 +48,10 @@ public sealed class ManagedService : IDisposable
     void Log(string? line)
     {
         if (line == null) return;
-        lock (_gate) { try { _log?.WriteLine(line); } catch (ObjectDisposedException) { } }
+        lock (_fileLock) { try { if (_logOpen) File.AppendAllText(Spec.LogFile, line + Environment.NewLine); } catch (IOException) { } }
     }
 
-    void CloseLog() { lock (_gate) { _log?.Dispose(); _log = null; } }
+    void CloseLog() { lock (_gate) _logOpen = false; }
 
     public async Task StartAsync(TimeSpan? readyTimeout = null, CancellationToken ct = default)
     {
@@ -62,7 +65,7 @@ public sealed class ManagedService : IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(Spec.LogFile)!);
         lock (_gate)
         {
-            _log = new StreamWriter(new FileStream(Spec.LogFile, FileMode.Append, FileAccess.Write, FileShare.ReadWrite)) { AutoFlush = true };
+            _logOpen = true;
         }
 
         var psi = new ProcessStartInfo(Spec.Exe)
@@ -96,10 +99,11 @@ public sealed class ManagedService : IDisposable
         if (Spec.ReadyPort is int port)
         {
             var deadline = DateTime.UtcNow + (readyTimeout ?? TimeSpan.FromSeconds(20));
-            while (DateTime.UtcNow < deadline && !p.HasExited && !PortProbe.IsListening(port))
+            while (DateTime.UtcNow < deadline && !p.HasExited && !PortProbe.IsOpen(port))
                 await Task.Delay(50, ct);
-            if (!p.HasExited && !PortProbe.IsListening(port))
-                Log($"[rhapsody-server] port {port} not listening after timeout; marking running anyway");
+            if (!p.HasExited && !PortProbe.IsOpen(port))
+                Log($"[rhapsody-server] port {port} still isn't open after {(int)(readyTimeout ?? TimeSpan.FromSeconds(20)).TotalSeconds} seconds. " +
+                    "The program is running, so it may just be slow (antivirus scans new programs). If the site doesn't load, the error log has the reason.");
         }
         else
         {
@@ -117,7 +121,8 @@ public sealed class ManagedService : IDisposable
     {
         if (!ReferenceEquals(p, _proc) && _proc != null) return; // stale process from an earlier start
         try { LastExitCode = p.ExitCode; } catch { }
-        Log($"[rhapsody-server] process exited (code {LastExitCode})");
+        // Stopping a program by force always reports code -1 on Windows: that is a normal stop, not a crash.
+        Log(_stopping ? "[rhapsody-server] stopped" : $"[rhapsody-server] process exited unexpectedly (code {LastExitCode})");
         Set(_stopping ? ServiceState.Stopped : ServiceState.Crashed);
     }
 

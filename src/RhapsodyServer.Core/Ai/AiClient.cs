@@ -14,8 +14,10 @@ public sealed class AiException : Exception
     public bool Retryable { get; }
     public bool Busy { get; }
     public int? Status { get; }
-    public AiException(string message, bool retryable = false, int? status = null, bool busy = false) : base(message)
-    { Retryable = retryable; Status = status; Busy = busy; }
+    /// <summary>The provider or model doesn't take tool definitions, so the agent can't run on it.</summary>
+    public bool ToolsUnsupported { get; }
+    public AiException(string message, bool retryable = false, int? status = null, bool busy = false, bool toolsUnsupported = false) : base(message)
+    { Retryable = retryable; Status = status; Busy = busy; ToolsUnsupported = toolsUnsupported; }
 }
 
 /// <summary>Where one request goes. The key is optional (Ollama, LM Studio).</summary>
@@ -42,7 +44,6 @@ public sealed class AiClient
 
     public async Task<AiReply> ChatAsync(AiCall call, string system, string user, int maxTokens, TimeSpan timeout, CancellationToken ct)
     {
-        var url = AiUrl.Validate(call.BaseUrl) + "/chat/completions";
         var body = JsonSerializer.Serialize(new
         {
             model = call.Model,
@@ -55,7 +56,57 @@ public sealed class AiClient
             max_tokens = maxTokens,
             stream = false
         });
+        var (text, ms) = await PostAsync(call, body, timeout, ct);
+        return Parse(call, text, ms);
+    }
 
+    /// <summary>
+    /// One step of an agent conversation: the whole history plus the tools on offer. The model answers, or asks for tools.
+    /// Uses the standard "tools" / "tool_calls" fields, which every provider in the preset list accepts (Ollama needs a model that supports them).
+    /// </summary>
+    public async Task<ChatTurn> ChatWithToolsAsync(AiCall call, IReadOnlyList<ChatMessage> messages, IReadOnlyList<ToolSpec> tools, int maxTokens, TimeSpan timeout, CancellationToken ct)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["model"] = call.Model,
+            ["messages"] = messages.Select(WireMessage).ToList(),
+            ["temperature"] = 0.2,
+            ["max_tokens"] = maxTokens,
+            ["stream"] = false
+        };
+        if (tools.Count > 0)   // the last "answer now" round sends none; some providers reject an empty list
+        {
+            payload["tools"] = tools.Select(t => new { type = "function", function = new { name = t.Name, description = t.Description, parameters = t.Parameters } }).ToList();
+            payload["tool_choice"] = "auto";
+        }
+        var body = JsonSerializer.Serialize(payload);
+        try
+        {
+            var (text, ms) = await PostAsync(call, body, timeout, ct);
+            return ParseTurn(call, text, ms);
+        }
+        // A 400 that talks about tools or functions means this model can't be an agent: say so plainly instead of "refused the request".
+        catch (AiException ex) when (ex.Status is 400 or 422 && Regex.IsMatch(ex.Message, @"(?i)\b(tools?|functions?|tool_choice)\b"))
+        {
+            throw new AiException($"{call.ProviderName}'s model \"{call.Model}\" doesn't support tool calling, which Ask needs. " +
+                $"Pick a model that does on the AI page (for Ollama, for example llama3.1 or qwen2.5). {ex.Message}", status: ex.Status, toolsUnsupported: true);
+        }
+    }
+
+    static object WireMessage(ChatMessage m)
+    {
+        var d = new Dictionary<string, object?> { ["role"] = m.Role, ["content"] = m.Content };
+        if (m.ToolCalls is { Count: > 0 })
+            d["tool_calls"] = m.ToolCalls.Select(c => new { id = c.Id, type = "function", function = new { name = c.Name, arguments = c.ArgumentsJson } }).ToList();
+        if (m.ToolCallId != null) d["tool_call_id"] = m.ToolCallId;
+        if (m.Role == "tool" && m.ToolName != null) d["name"] = m.ToolName;
+        return d;
+    }
+
+    /// <summary>Sends one request and returns the body. All the error wording lives here, shared by every kind of call.</summary>
+    async Task<(string Text, long Ms)> PostAsync(AiCall call, string body, TimeSpan timeout, CancellationToken ct)
+    {
+        var url = AiUrl.Validate(call.BaseUrl) + "/chat/completions";
         using var req = new HttpRequestMessage(HttpMethod.Post, url) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
         req.Headers.UserAgent.ParseAdd("RhapsodyServer/1.0");
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
@@ -69,7 +120,7 @@ public sealed class AiClient
             using var res = await _http.SendAsync(req, HttpCompletionOption.ResponseContentRead, cts.Token);
             var text = await res.Content.ReadAsStringAsync(cts.Token);
             if (!res.IsSuccessStatusCode) throw MapError(call, res, text);
-            return Parse(call, text, sw.ElapsedMilliseconds);
+            return (text, sw.ElapsedMilliseconds);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -126,6 +177,52 @@ public sealed class AiClient
             return m.Length > 300 ? m[..300] + "…" : m;
         }
         catch (JsonException) { return ""; }
+    }
+
+    static int _idCounter;
+
+    static ChatTurn ParseTurn(AiCall call, string json, long ms)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var choice = doc.RootElement.GetProperty("choices")[0];
+            var message = choice.GetProperty("message");
+            var text = "";
+            if (message.TryGetProperty("content", out var c))
+            {
+                if (c.ValueKind == JsonValueKind.String) text = c.GetString() ?? "";
+                else if (c.ValueKind == JsonValueKind.Array)
+                    text = string.Concat(c.EnumerateArray().Select(p => p.TryGetProperty("text", out var t) ? t.GetString() : null));
+            }
+            text = Think.Replace(text, "").Trim();
+
+            var calls = new List<ToolCall>();
+            if (message.TryGetProperty("tool_calls", out var tc) && tc.ValueKind == JsonValueKind.Array)
+                foreach (var item in tc.EnumerateArray())
+                {
+                    if (!item.TryGetProperty("function", out var fn) || !fn.TryGetProperty("name", out var nm) || nm.GetString() is not { Length: > 0 } name) continue;
+                    // Arguments normally arrive as a JSON string; some local servers send the object itself.
+                    var args = "{}";
+                    if (fn.TryGetProperty("arguments", out var a))
+                        args = a.ValueKind == JsonValueKind.String ? (a.GetString() is { Length: > 0 } s ? s : "{}") : a.ValueKind == JsonValueKind.Null ? "{}" : a.GetRawText();
+                    // Some providers leave the id out; others (Mistral) insist on 9 letters and digits, so make ours that shape.
+                    var id = item.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(idEl.GetString())
+                        ? idEl.GetString()! : "c" + Interlocked.Increment(ref _idCounter).ToString("D8");
+                    calls.Add(new ToolCall(id, name, args));
+                }
+
+            var finish = choice.TryGetProperty("finish_reason", out var f) && f.ValueKind == JsonValueKind.String ? f.GetString() : null;
+            if (text.Length == 0 && calls.Count == 0)
+                throw new AiException(finish == "length"
+                    ? $"{call.ProviderName}'s model ran out of room while thinking and gave no answer. Try again, or pick a different model on the AI page."
+                    : $"{call.ProviderName} returned an empty answer. Try again, or pick a different model on the AI page.", retryable: true);
+            return new ChatTurn(text, calls, call.ProviderName, call.Model, ms, finish == "length" && calls.Count == 0);
+        }
+        catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException or IndexOutOfRangeException)
+        {
+            throw new AiException($"{call.ProviderName} answered in a format this app doesn't understand. Is the base URL an OpenAI-compatible endpoint (it should end like /v1)?");
+        }
     }
 
     static AiReply Parse(AiCall call, string json, long ms)

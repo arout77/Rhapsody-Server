@@ -39,6 +39,20 @@ public static class HostsFile
     }
 
     /// <summary>True if this process can already write the hosts file (so no admin prompt is needed).</summary>
+    /// <summary>True if the hosts file has a non-comment line that names this domain.</summary>
+    public static bool Contains(string domain, string? path = null)
+    {
+        try
+        {
+            return File.ReadAllLines(path ?? DefaultPath).Any(l =>
+            {
+                var t = l.Split('#')[0].Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+                return t.Length > 1 && t.Skip(1).Contains(domain, StringComparer.OrdinalIgnoreCase);
+            });
+        }
+        catch (IOException) { return false; }
+    }
+
     public static bool CanWrite(string? path = null)
     {
         path ??= DefaultPath;

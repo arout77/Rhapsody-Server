@@ -116,6 +116,23 @@ public static class RhapsodyScaffold
         return (db, user, pass);
     }
 
+    /// <summary>
+    /// The skeleton's own Composer scripts, in the order Composer would have run them during create-project.
+    /// Only the ones the project actually defines.
+    /// </summary>
+    public static IReadOnlyList<string> ScriptsToRun(string composerJson)
+    {
+        string[] order = { "post-root-package-install", "post-autoload-dump", "post-install-cmd", "post-create-project-cmd" };
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(composerJson);
+            if (!doc.RootElement.TryGetProperty("scripts", out var sc) || sc.ValueKind != System.Text.Json.JsonValueKind.Object)
+                return Array.Empty<string>();
+            return order.Where(n => sc.TryGetProperty(n, out _)).ToList();
+        }
+        catch (System.Text.Json.JsonException) { return Array.Empty<string>(); }
+    }
+
     public static async Task<Site> RunAsync(Stack stack, ScaffoldRequest req, IProgress<string>? p = null, CancellationToken ct = default)
     {
         var s = stack.Settings;
@@ -149,18 +166,42 @@ public static class RhapsodyScaffold
         var env = stack.PhpEnv(req.Php, forComposer: true).ToDictionary(kv => kv.Key, kv => kv.Value);
         foreach (var (k, v) in values) env[k] = v;
 
+        // Composer runs the skeleton's install scripts (which run the Phinx migrations) right after downloading, and Phinx
+        // reads its credentials from the project's .env, not from environment variables. So the download happens with scripts
+        // off, our .env is written, and only then are the skeleton's scripts run, in Composer's own order.
         p?.Report($"Creating project from {package}...");
-        r = await ProcessRunner.RunAsync(
-            stack.PhpExe(req.Php),
-            new[] { stack.Installer.PathOf(Catalog.Composer), "create-project", package, dir, "--no-interaction", "--prefer-dist" },
+        var php = stack.PhpExe(req.Php);
+        var composer = stack.Installer.PathOf(Catalog.Composer);
+        var preExisted = Directory.Exists(dir);
+        r = await ProcessRunner.RunAsync(php,
+            new[] { composer, "create-project", package, dir, "--no-interaction", "--prefer-dist", "--no-scripts" },
             parent, env, TimeSpan.FromMinutes(15), ct);
-        if (!r.Ok) throw new InvalidOperationException($"composer create-project failed (exit code {r.ExitCode}):\n" + r.Output.Trim());
+        if (!r.Ok)
+        {
+            // A half-downloaded folder would make the next attempt fail with "already exists and isn't empty".
+            if (!preExisted) { try { Directory.Delete(dir, true); } catch { } }
+            throw new InvalidOperationException($"composer create-project failed (exit code {r.ExitCode}):\n" + r.Output.Trim());
+        }
 
         var envPath = Path.Combine(dir, ".env");
         var example = Path.Combine(dir, ".env.example");
-        if (!File.Exists(envPath) && File.Exists(example)) File.Copy(example, envPath);
-        var existing = File.Exists(envPath) ? File.ReadAllText(envPath) : "";
-        File.WriteAllText(envPath, UpsertEnv(existing, values));   // same values the install scripts just used, including APP_KEY
+        var scripts = ScriptsToRun(File.ReadAllText(Path.Combine(dir, "composer.json")));
+
+        void WriteEnv()
+        {
+            if (!File.Exists(envPath) && File.Exists(example)) File.Copy(example, envPath);
+            var existing = File.Exists(envPath) ? File.ReadAllText(envPath) : "";
+            File.WriteAllText(envPath, UpsertEnv(existing, values));   // the same values (including APP_KEY) the scripts will read
+        }
+
+        WriteEnv();   // before any script runs, so Phinx finds the real database, user and password
+        foreach (var script in scripts)
+        {
+            p?.Report($"Running {script}...");
+            r = await ProcessRunner.RunAsync(php, new[] { composer, "run-script", script, "--no-interaction" }, dir, env, TimeSpan.FromMinutes(10), ct);
+            if (!r.Ok) throw new InvalidOperationException($"The project was downloaded to {dir}, but its \"{script}\" step failed (exit code {r.ExitCode}):\n" + r.Output.Trim());
+            WriteEnv();   // a script may rewrite .env; put our values back
+        }
 
         p?.Report("Starting services...");
         await stack.StartAllAsync(p, ct);

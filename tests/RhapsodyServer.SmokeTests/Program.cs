@@ -170,13 +170,30 @@ CheckS("nginx: upstream per PHP branch, vhosts, forward slashes, loopback only",
     True(!c.Contains("C:\\"), "no backslash paths in nginx.conf");
     Eq(2, c.Split("ssl_certificate ").Length - 1);
 });
-CheckS("apache: balancer when workers>1, direct fcgi when 1", () =>
+CheckS("apache: always talks to the first PHP worker directly (the balancer route 500'd on Apache Lounge 2.4.69); nginx still balances", () =>
 {
-    var many = ConfigWriter.Apache(settings, sites, "C:\\o\\apache", "C:\\o\\etc\\apache");
-    True(many.Contains("<Proxy \"balancer://php_8_4\">") && many.Contains("SetHandler \"proxy:balancer://php_8_4\""));
-    var one = ConfigWriter.Apache(new Settings { PhpWorkersPerVersion = 1 }, sites, "C:\\o\\apache", "C:\\o\\etc\\apache");
-    True(!one.Contains("<Proxy \"balancer") && !one.Contains("SetHandler \"proxy:balancer"), "no balancer with a single worker");
-    True(one.Contains("SetHandler \"proxy:fcgi://127.0.0.1:9840\"") && one.Contains("<VirtualHost 127.0.0.1:443>"));
+    foreach (var workers in new[] { 1, 2 })
+    {
+        var ap = ConfigWriter.Apache(new Settings { PhpWorkersPerVersion = workers }, sites, "C:\\o\\apache", "C:\\o\\etc\\apache");
+        True(!ap.Contains("balancer"), "no balancer in the Apache config");
+        True(ap.Contains("ProxyFCGIBackendType GENERIC"), "php-cgi is not PHP-FPM; without GENERIC every page is 'No input file specified.'");
+        True(ap.Contains("SetHandler \"proxy:fcgi://127.0.0.1:9840/\"") && ap.Contains("SCRIPT_FILENAME \"%{DOCUMENT_ROOT}%{reqenv:SCRIPT_NAME}\"") && ap.Contains("<VirtualHost 127.0.0.1:443>"));
+    }
+    var ng = ConfigWriter.Nginx(new Settings { PhpWorkersPerVersion = 2 }, sites, "C:\\o\\nginx", "C:\\o\\etc\\nginx", "C:\\o\\etc\\nginx\\fastcgi_params");
+    True(ng.Contains("server 127.0.0.1:9840;") && ng.Contains("server 127.0.0.1:9841;"));
+});
+CheckS("catch-all: unknown names get their own first server/vhost, not whichever site is listed first", () =>
+{
+    var n = ConfigWriter.Nginx(settings, sites, "C:\\o\\nginx", "C:\\o\\etc\\nginx", "C:\\o\\etc\\nginx\\fastcgi_params", false, "C:\\o\\etc\\default-site");
+    True(n.IndexOf("default_server;") is var d && d > 0 && d < n.IndexOf("server_name shop.test;"), "default server comes before every site");
+    True(n.Contains("listen 127.0.0.1:443 ssl default_server;") && n.Contains("root \"C:/o/etc/default-site\";") && n.Contains("return 404;"));
+    var a = ConfigWriter.Apache(settings, sites, "C:\\o\\apache", "C:\\o\\etc\\apache", false, null, "C:\\o\\etc\\default-site");
+    var first80 = a.IndexOf("<VirtualHost 127.0.0.1:80>"); var first443 = a.IndexOf("<VirtualHost 127.0.0.1:443>");
+    True(a.IndexOf("ServerName default.invalid") is var dn && dn > first80 && dn < a.IndexOf("ServerName shop.test"), "default vhost first on port 80");
+    True(a.IndexOf("ServerName default.invalid", dn + 1) is var d2 && d2 > first443 && d2 < a.IndexOf("ServerName shop.test", a.IndexOf("ServerName shop.test") + 1), "default vhost first on port 443");
+    True(!ConfigWriter.Nginx(settings, sites, "C:\\o\\nginx", "C:\\o\\etc\\nginx", "C:\\o\\etc\\nginx\\fastcgi_params").Contains("default_server"), "no default unless asked for");
+    var page = ConfigWriter.DefaultPageHtml(new[] { "shop.test", "<b>x</b>.test" });
+    True(page.Contains("shop.test") && !page.Contains("<b>x</b>") && page.Contains("&lt;b&gt;"), "names are HTML-escaped");
 });
 CheckS("php.ini: 7.1 uses prefixed dll names, 8.x doesn't", () =>
 {
@@ -1154,6 +1171,16 @@ CheckS("scaffold: database exists and credentials reach composer's install scrip
     True(src.IndexOf("StartServiceAsync(\"mariadb\"") is var iStart && iStart > 0 && iStart < iDb, "MariaDB is started before that");
     True(src.Contains("parent, env,"), "composer gets the DB_* values as its environment");
 });
+CheckS("scaffold: composer scripts run only after .env holds the real credentials, in Composer's order, and only the ones defined", () =>
+{
+    var order = RhapsodyScaffold.ScriptsToRun("{\"scripts\":{\"post-create-project-cmd\":[\"@php rhapsody migrate\"],\"post-root-package-install\":\"x\",\"post-install-cmd\":\"y\",\"test\":\"z\"}}");
+    Eq("post-root-package-install,post-install-cmd,post-create-project-cmd", string.Join(",", order));
+    Eq(0, RhapsodyScaffold.ScriptsToRun("{\"name\":\"a/b\"}").Count);
+    Eq(0, RhapsodyScaffold.ScriptsToRun("not json").Count);
+    var src = File.ReadAllText(FindUp("src/RhapsodyServer.Core/RhapsodyScaffold.cs"));
+    var iNoScripts = src.IndexOf("\"--no-scripts\""); var iEnv = src.IndexOf("WriteEnv();   // before"); var iRun = src.IndexOf("\"run-script\"");
+    True(iNoScripts > 0 && iEnv > iNoScripts && iRun > iEnv, "download with scripts off, write .env, then run the scripts");
+});
 CheckS("phpMyAdmin: bundled version is 5.2.3 and its folder gets a .user.ini that hides deprecation notices only there", () =>
 {
     Eq("5.2.3", Catalog.PhpMyAdmin.Version); True(Catalog.PhpMyAdmin.Url.Contains("/5.2.3/phpMyAdmin-5.2.3-"));
@@ -1605,6 +1632,119 @@ await Check("open folder (real backend): names map to server-chosen folders; a m
     await Task.CompletedTask;
 });
 
+CheckS("php.ini: the person's own settings under the marker survive every rewrite; the generated part does not", () =>
+{
+    var fresh = ConfigWriter.PhpIni("8.4", "C:\\php", "C:\\tmp", settings);
+    True(fresh.Contains(ConfigWriter.PhpIniUserMarker) && fresh.IndexOf("[Session]") < fresh.IndexOf(ConfigWriter.PhpIniUserMarker), "marker is last");
+    Eq("; Example:\r\n; memory_limit=1G\r\n", ConfigWriter.ExtractPhpIniUserBlock(fresh)!);
+    Eq(null, ConfigWriter.ExtractPhpIniUserBlock("[PHP]\nmemory_limit=1G\n"));   // an older, fully generated file has nothing to keep
+    var mine = "memory_limit=2G\r\nxdebug.mode=debug\r\n";
+    var edited = fresh.Replace("memory_limit=512M", "memory_limit=999M") + mine;   // a hand edit above the line is lost on purpose, below it is kept
+    var next = ConfigWriter.PhpIni("8.4", "C:\\php", "C:\\tmp", settings, null, ConfigWriter.ExtractPhpIniUserBlock(edited));
+    True(next.EndsWith(mine) && next.Contains("memory_limit=512M") && !next.Contains("999M"), next);
+    Eq("; Example:\r\n; memory_limit=1G\r\n" + mine, ConfigWriter.ExtractPhpIniUserBlock(next)!);   // the example comments are theirs now too, and it keeps surviving
+    Eq("", ConfigWriter.ExtractPhpIniUserBlock(fresh[..(fresh.IndexOf(ConfigWriter.PhpIniUserMarker) + ConfigWriter.PhpIniUserMarker.Length)])!);   // marker with nothing after it
+});
+CheckS("php.ini (real stack): the file is created on demand, user lines survive extension changes, restart is harmless when PHP isn't running", () =>
+{
+    var paths = new ServerPaths(Path.Combine(tmpRoot, "home-ini"));
+    using var stack = new Stack(paths);
+    var d = Path.Combine(paths.Bin, "php", "8.4"); Directory.CreateDirectory(Path.Combine(d, "ext"));
+    File.WriteAllText(Path.Combine(d, "php-cgi.exe"), "x"); File.WriteAllText(Path.Combine(d, "php.exe"), "x");
+    foreach (var f in new[] { "gd", "mbstring", "mysqli", "openssl", "zip" }) File.WriteAllText(Path.Combine(d, "ext", $"php_{f}.dll"), "x");
+
+    var ini = Path.Combine(paths.Etc, "php", "8.4", "php.ini");
+    True(!File.Exists(ini));
+    Eq(ini, stack.EnsurePhpIni("8.4")); True(File.Exists(ini), "created when missing");
+    Eq(ini, stack.PhpIniPath("8.4"));
+    try { stack.EnsurePhpIni("8.0"); throw new Exception("should refuse"); } catch (InvalidOperationException ex) { True(ex.Message.Contains("isn't installed")); }
+
+    File.AppendAllText(ini, "memory_limit=2G\r\n");
+    stack.SetPhpExtensionsAsync("8.4", new[] { "gd" }).GetAwaiter().GetResult();
+    var after = File.ReadAllText(ini);
+    True(after.Contains("extension=gd") && !after.Contains("extension=zip"), "generated part follows the new choice");
+    True(after.TrimEnd().EndsWith("memory_limit=2G"), after);
+    True(after.IndexOf("memory_limit=512M") < after.IndexOf("memory_limit=2G"), "the person's value comes last, so PHP uses it");
+    stack.RestartPhpAsync("8.4").GetAwaiter().GetResult();   // nothing running: a no-op, not an error
+});
+await Check("php.ini (real backend): edit and reveal open the file PHP loads; the page can't pick a path or an unknown action", async () =>
+{
+    var paths = new ServerPaths(Path.Combine(tmpRoot, "ini-open")); paths.EnsureCreated();
+    using var stack = new Stack(paths, new Installer(paths, new HttpClient(new ThrowingHandler())));
+    foreach (var b in new[] { "8.4", "8.5" }) { var d = Path.Combine(paths.Bin, "php", b); Directory.CreateDirectory(Path.Combine(d, "ext")); File.WriteAllText(Path.Combine(d, "php-cgi.exe"), "x"); }
+    stack.Settings.DefaultPhp = "8.5";
+    var opener = new RecordingOpener();
+    var be = new StackBackend(stack, null, null, opener);
+    var ini85 = Path.Combine(paths.Etc, "php", "8.5", "php.ini"); var ini84 = Path.Combine(paths.Etc, "php", "8.4", "php.ini");
+
+    be.OpenPhpIni(new PhpIniRequest(null, "edit"));                 // no version = the default PHP
+    be.OpenPhpIni(new PhpIniRequest("8.4", "REVEAL"));
+    Eq(1, opener.Edited.Count); Eq(ini85, opener.Edited[0]);
+    Eq(1, opener.Revealed.Count); Eq(ini84, opener.Revealed[0]);
+    True(File.Exists(ini85) && File.Exists(ini84), "files are written first if they don't exist");
+    Eq(ini85, be.GetPhpModules("8.5").IniPath!);                    // the modules page shows the same file
+
+    string Refused(PhpIniRequest r) { try { be.OpenPhpIni(r); } catch (ArgumentException ex) { return ex.Message; } throw new Exception("expected a refusal"); }
+    True(Refused(new PhpIniRequest("7.4", "edit")).Contains("isn't installed"));
+    True(Refused(new PhpIniRequest(@"..\..\Windows", "edit")).Contains("isn't installed"), "a version is never treated as a path");
+    True(Refused(new PhpIniRequest("8.5", "delete")).Contains("Unknown action"));
+    True(Refused(new PhpIniRequest("8.5", @"C:\Windows\win.ini")).Contains("Unknown action"), "an action is never a path");
+    Eq(2, opener.Edited.Count + opener.Revealed.Count);             // none of the refused requests reached the shell
+    await Task.CompletedTask;
+});
+await Check("php.ini API: needs the token; opens through the backend; bad input is a readable 400; restart runs as an operation", async () =>
+{
+    Eq(HttpStatusCode.Unauthorized, (await Call(Req(HttpMethod.Post, "/api/php/ini", new { action = "edit" }, token: false))).Item1);
+    var (code, _) = await Call(Req(HttpMethod.Post, "/api/php/ini", new { branch = (string?)null, action = "edit" }));
+    Eq(HttpStatusCode.OK, code);
+    True(fake.IniRequests.Count == 1 && fake.IniRequests[0].EndsWith(":edit"), string.Join(",", fake.IniRequests));
+    var (c2, b2) = await Call(Req(HttpMethod.Post, "/api/php/ini", new { branch = "8.5", action = "format c:" }));
+    Eq(HttpStatusCode.BadRequest, c2); True(b2.GetProperty("error").GetString()!.Contains("Unknown action"));
+    var (c3, b3) = await Call(Req(HttpMethod.Post, "/api/php/ini", new { branch = "1.1", action = "edit" }));
+    Eq(HttpStatusCode.BadRequest, c3); True(b3.GetProperty("error").GetString()!.Contains("isn't installed"));
+    Eq(1, fake.IniRequests.Count);                                  // refused requests never got through
+    var (c4, _) = await Call(Req(HttpMethod.Post, "/api/php/8.5/restart", new { }));
+    True(c4 == HttpStatusCode.OK || c4 == HttpStatusCode.Accepted, c4.ToString());
+    Eq("8.5", fake.Restarted.Single());
+    Eq(HttpStatusCode.NotFound, (await Call(Req(HttpMethod.Post, "/api/php/..%5Cx/restart", new { }))).Item1);
+});
+await Check("site test API: needs the token; returns the report; an unknown site is a readable 400", async () =>
+{
+    Eq(HttpStatusCode.Unauthorized, (await Call(Req(HttpMethod.Post, "/api/sites/shop/check", new { }, token: false))).Item1);
+    var (code, body) = await Call(Req(HttpMethod.Post, "/api/sites/shop/check", new { }));
+    Eq(HttpStatusCode.OK, code); True(body.GetProperty("report").GetString()!.Contains("200 OK"));
+    var (c2, b2) = await Call(Req(HttpMethod.Post, "/api/sites/gone/check", new { }));
+    Eq(HttpStatusCode.BadRequest, c2); True(b2.GetProperty("error").GetString()!.Contains("no site"));
+});
+CheckS("hosts file: Contains sees real entries only, not comments", () =>
+{
+    var f = Path.GetTempFileName();
+    try
+    {
+        File.WriteAllText(f, "127.0.0.1 localhost\n# 127.0.0.1 hidden.test\n127.0.0.1 shop.test www.shop.test # mine\n");
+        True(HostsFile.Contains("shop.test", f) && HostsFile.Contains("www.shop.test", f) && HostsFile.Contains("SHOP.test", f));
+        True(!HostsFile.Contains("hidden.test", f) && !HostsFile.Contains("other.test", f));
+    }
+    finally { File.Delete(f); }
+});
+CheckS("supervisor logs: services sharing one log file keep every line", () =>
+{
+    var dir = Path.Combine(Path.GetTempPath(), "rs-log-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(dir);
+    var log = Path.Combine(dir, "php-8.5.log");
+    try
+    {
+        var sh = OperatingSystem.IsWindows() ? "cmd.exe" : "/bin/sh";
+        string[] Args(string tag) => OperatingSystem.IsWindows() ? new[] { "/c", $"for /l %i in (1,1,30) do @echo {tag}%i" } : new[] { "-c", $"i=1; while [ $i -le 30 ]; do echo {tag}$i; i=$((i+1)); done" };
+        using var a = new ManagedService(new ServiceSpec("php-8.5-0", "A", sh, Args("a"), dir, log, null, null));
+        using var b = new ManagedService(new ServiceSpec("php-8.5-1", "B", sh, Args("b"), dir, log, null, null));
+        Task Run(ManagedService m) => Task.Run(async () => { try { await m.StartAsync(); } catch (InvalidOperationException) { /* they exit at once; that is the point */ } });
+        Task.WaitAll(Run(a), Run(b));
+        Thread.Sleep(1500);
+        var lines = File.ReadAllLines(log);
+        Eq(30, lines.Count(l => l.StartsWith("a"))); Eq(30, lines.Count(l => l.StartsWith("b")));
+    }
+    finally { try { Directory.Delete(dir, true); } catch { } }
+});
 await Check("open folder API: needs the token and the same origin; the page can only name a place, never choose a path", async () =>
 {
     Eq(HttpStatusCode.Unauthorized, (await Call(Req(HttpMethod.Post, "/api/open", new { target = "sites" }, token: false))).Item1);
@@ -1665,4 +1805,7 @@ sealed class RecordingOpener : IFolderOpener
     public readonly List<string> Opened = new();
     public bool CanOpen => true;
     public void Open(string folder) => Opened.Add(folder);
+    public readonly List<string> Edited = new(), Revealed = new();
+    public void OpenFile(string file) => Edited.Add(file);
+    public void Reveal(string file) => Revealed.Add(file);
 }

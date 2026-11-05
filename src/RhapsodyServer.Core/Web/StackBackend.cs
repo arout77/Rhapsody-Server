@@ -4,7 +4,7 @@ using RhapsodyServer.Core.Ai;
 
 namespace RhapsodyServer.Core.Web;
 
-public sealed class StackBackend : IDashboardBackend
+public sealed class StackBackend : IDashboardBackend, IDevContext
 {
     readonly Stack _s;
     readonly IFolderPicker? _picker;
@@ -21,7 +21,7 @@ public sealed class StackBackend : IDashboardBackend
         _s.Settings.Ai ??= new AiSettings();   // a settings.json from before the AI helper existed
         ai ??= new AiService(_s.Settings.Ai, _s.Save, new AiKeyStore(Path.Combine(_s.Paths.Root, "ai-keys.json")),
             Path.Combine(_s.Paths.Root, "ai-providers.json"));
-        _ai = new AiHelper(ai, DescribeEnvironment, ReadLog, () => new[] { _s.Settings.UiToken, _s.Settings.PmaSecret });
+        _ai = new AiHelper(ai, DescribeEnvironment, ReadLog, () => new[] { _s.Settings.UiToken, _s.Settings.PmaSecret }, dev: this);
         _s.Supervisor.StateChanged += _ => Changed?.Invoke();
         _s.OperationChanged += () => Changed?.Invoke();
         _s.Profile.Changed += () => ProfileChanged?.Invoke();
@@ -81,6 +81,57 @@ public sealed class StackBackend : IDashboardBackend
     /// The page names a place ("sites", "logs", a site by name); the path always comes from here, never from the request,
     /// so this can't be used to open or launch anything else.
     /// </summary>
+    public async Task<string> CheckSiteAsync(string name, CancellationToken ct)
+    {
+        var site = _s.Settings.Sites.FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+            ?? throw new ArgumentException($"There is no site called \"{name}\".");
+        var domain = _s.Domain(site.Name);
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"Site: {domain}   (PHP {site.Php}, folder {site.Root})");
+        sb.AppendLine($"Web server: {_s.WebServerId} is {StateName(_s.Supervisor.Get(_s.WebServerId)?.State ?? ServiceState.Stopped)}");
+        foreach (var w in _s.Supervisor.All.Where(x => x.Spec.Id.StartsWith("php-" + site.Php + "-")))
+            sb.AppendLine($"{w.Spec.Name}: {StateName(w.State)}, port {w.Spec.ReadyPort} {(PortProbe.IsOpen(w.Spec.ReadyPort ?? 0) ? "open" : "NOT open")}");
+        try
+        {
+            var cgi = Path.Combine(_s.PhpDir(site.Php), "php-cgi.exe");
+            if (File.Exists(cgi))
+            {
+                var v = await ProcessRunner.RunAsync(cgi, new[] { "-v" }, _s.PhpDir(site.Php), _s.PhpEnv(site.Php).ToDictionary(k => k.Key, k => k.Value), TimeSpan.FromSeconds(15), ct);
+                sb.AppendLine($"php-cgi -v: exit code {v.ExitCode}{(v.Output.Trim().Length == 0 ? ", printed nothing (a missing DLL or a crash looks like this)" : "")}");
+                if (v.Output.Trim().Length > 0) sb.AppendLine(string.Join("\n", v.Output.Trim().Split('\n').Take(8).Select(l => "  " + l.TrimEnd())));
+            }
+            else sb.AppendLine($"php-cgi.exe is NOT in {_s.PhpDir(site.Php)}");
+        }
+        catch (Exception ex) { sb.AppendLine("php-cgi -v could not run: " + ex.Message); }
+        sb.AppendLine($"Ports: {_s.Settings.HttpPort} {(PortProbe.IsOpen(_s.Settings.HttpPort) ? "open" : "NOT open")}, {_s.Settings.HttpsPort} {(PortProbe.IsOpen(_s.Settings.HttpsPort) ? "open" : "NOT open")}");
+        sb.AppendLine($"Entry for {domain} in the hosts file: {(HostsFile.Contains(domain) ? "yes" : "NO")}");
+        sb.AppendLine(File.Exists(Path.Combine(site.Root, ".env")) ? ".env: found" : ".env: MISSING in the site folder");
+
+        try
+        {
+            using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(20) };
+            using var rq = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{_s.Settings.HttpPort}/");
+            rq.Headers.Host = domain;
+            using var rs = await http.SendAsync(rq, ct);
+            var body = await rs.Content.ReadAsStringAsync(ct);
+            body = System.Text.RegularExpressions.Regex.Replace(System.Text.RegularExpressions.Regex.Replace(body, @"(?is)<(script|style).*?</\1>", " "), "<[^>]+>", " ");
+            body = System.Text.RegularExpressions.Regex.Replace(body, @"\s+", " ").Trim();
+            sb.AppendLine($"\nRequest for http://{domain}/ answered: {(int)rs.StatusCode} {rs.ReasonPhrase}");
+            if (rs.Headers.Location != null) sb.AppendLine("Redirects to: " + rs.Headers.Location);
+            if (body.Length > 0) sb.AppendLine("Page says: " + (body.Length > 600 ? body[..600] + "…" : body));
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            sb.AppendLine($"\nRequest for http://{domain}/ got no answer: {ex.Message}");
+        }
+
+        var errs = new[] { Path.Combine(_s.Paths.Etc, _s.WebServerId, "logs", "error.log"), Path.Combine(_s.Paths.Data, "php-tmp", "php_error.log") };
+        sb.AppendLine($"\n----- last lines of php-{site.Php}.log (what the PHP workers printed) -----\n{TailOf(Path.Combine(_s.Paths.Logs, $"php-{site.Php}.log"), 15) ?? "(empty)"}");
+        foreach (var f in errs)
+            sb.AppendLine($"\n----- last lines of {Path.GetFileName(f)} -----\n{TailOf(f, 15) ?? "(empty or not created yet)"}");
+        return sb.ToString();
+    }
+
     public void OpenFolder(OpenFolderRequest req)
     {
         var target = (req.Target ?? "").Trim().ToLowerInvariant();
@@ -102,6 +153,24 @@ public sealed class StackBackend : IDashboardBackend
         }
         if (!Directory.Exists(path)) throw new ArgumentException($"That folder doesn't exist any more: {path}");
         _opener.Open(path);
+    }
+
+    /// <summary>The page names a PHP version and an action; the path is always the one PHP is told to load (PHPRC), never anything the page sends.</summary>
+    public void OpenPhpIni(PhpIniRequest req)
+    {
+        var installed = _s.InstalledPhpBranches();
+        var branch = string.IsNullOrWhiteSpace(req.Branch) ? _s.EffectiveActive("php") : req.Branch.Trim();
+        if (branch == null || !installed.Contains(branch)) throw new ArgumentException($"PHP {req.Branch ?? "(default)"} isn't installed.");
+        var action = (req.Action ?? "").Trim().ToLowerInvariant();
+        if (action is not ("edit" or "reveal")) throw new ArgumentException("Unknown action.");
+        var file = _s.EnsurePhpIni(branch);
+        if (action == "edit") _opener.OpenFile(file); else _opener.Reveal(file);
+    }
+
+    public Task RestartPhpAsync(string branch, IProgress<string> p, CancellationToken ct)
+    {
+        if (!_s.InstalledPhpBranches().Contains(branch)) throw new ArgumentException($"PHP {branch} isn't installed.");
+        return Run($"Restarting PHP {branch}", () => _s.RestartPhpAsync(branch, p, ct));
     }
 
     // ---------------------------------------------------------- folder picker
@@ -126,7 +195,7 @@ public sealed class StackBackend : IDashboardBackend
             : installed.FirstOrDefault();
         if (pick == null) return new PhpModulesDto(installed, null, Array.Empty<ModuleDto>(), false);
         var running = _s.Supervisor.All.Any(w => w.Spec.Id.StartsWith($"php-{pick}-") && w.State == ServiceState.Running);
-        return new PhpModulesDto(installed, pick, Dto(_s.PhpExtensionList(pick)), running);
+        return new PhpModulesDto(installed, pick, Dto(_s.PhpExtensionList(pick)), running, _s.PhpIniPath(pick));
     }
 
     public ApacheModulesDto GetApacheModules()
@@ -146,17 +215,36 @@ public sealed class StackBackend : IDashboardBackend
         Run("Updating Apache modules", () => _s.SetApacheModulesAsync(enabled, p, ct));
 
     // ------------------------------------------------------------------- logs
-    public string ReadLog(string id, int lines)
+    /// <summary>The last lines of a text file that another program may still be writing to, or null if it isn't there or is empty.</summary>
+    static string? TailOf(string path, int lines)
     {
-        if (!Regex.IsMatch(id, @"^[a-z0-9.\-]+$")) throw new ArgumentException("Bad log name");
-        var path = Path.Combine(_s.Paths.Logs, id + ".log");
-        if (!File.Exists(path)) return "(nothing logged yet)";
+        if (!File.Exists(path)) return null;
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         const int Tail = 256 * 1024;
         if (fs.Length > Tail) fs.Seek(-Tail, SeekOrigin.End);
         using var sr = new StreamReader(fs);
         var all = sr.ReadToEnd().Replace("\r\n", "\n").Split('\n');
-        return string.Join('\n', all.TakeLast(Math.Clamp(lines, 1, 2000)));
+        var text = string.Join('\n', all.TakeLast(Math.Clamp(lines, 1, 2000))).Trim('\n');
+        return text.Length == 0 ? null : text;
+    }
+
+    /// <summary>
+    /// What this service said (the supervisor's log), plus the file where the program itself writes its real errors:
+    /// the web server's error.log, or PHP's php_error.log. Without those the dashboard only shows start/stop lines.
+    /// </summary>
+    public string ReadLog(string id, int lines)
+    {
+        if (!Regex.IsMatch(id, @"^[a-z0-9.\-]+$")) throw new ArgumentException("Bad log name");
+        var parts = new List<string>();
+        if (TailOf(Path.Combine(_s.Paths.Logs, id + ".log"), lines) is { } own) parts.Add(own);
+
+        string? errorFile = id is "apache" or "nginx" ? Path.Combine(_s.Paths.Etc, id, "logs", "error.log")
+            : id.StartsWith("php-") ? Path.Combine(_s.Paths.Data, "php-tmp", "php_error.log")
+            : null;
+        if (errorFile != null && TailOf(errorFile, lines) is { } err)
+            parts.Add($"----- error log ({Path.GetFileName(errorFile)}): what the program itself reported -----\n{err}");
+
+        return parts.Count == 0 ? "(nothing logged yet)" : string.Join("\n\n", parts);
     }
 
     // --------------------------------------------------------------- versions
@@ -256,6 +344,70 @@ public sealed class StackBackend : IDashboardBackend
     public void SaveAi(AiSaveInput input) => _ai.Save(input);
     public Task<AiTestResult> TestAiAsync(string which, CancellationToken ct) => _ai.TestAsync(which, ct);
     public Task<AiAnswerDto> ExplainAsync(ExplainRequest req, CancellationToken ct) => _ai.ExplainAsync(req, ct);
+    public Task<AiAskDto> AskAiAsync(AiAskRequest req, IProgress<string>? progress, CancellationToken ct) => _ai.AskAsync(req, progress, ct);
+    public void CancelAi() => _ai.Cancel();
+
+    // ------------------------------------------------------- what the Ask assistant can see (IDevContext)
+    // ReadLog and CheckSiteAsync above already have the right shape and serve both the dashboard and the assistant.
+    IReadOnlyList<DevSite> IDevContext.Sites =>
+        _s.Settings.Sites.Select(x => new DevSite(x.Name, _s.Domain(x.Name), x.Root, x.PublicDir, x.Php, x.Https)).ToList();
+
+    IReadOnlyList<string> IDevContext.LogIds => GetState().Services.Select(x => x.Id).ToList();
+
+    bool IDevContext.ProfilingEnabled => _s.Settings.ProfilingEnabled;
+
+    Profiling.ProfileSnapshot IDevContext.Profile() => _s.Profile.Snapshot(_s.Settings.ProfilingEnabled, maxRequests: 500, maxQueries: 5000);
+
+    /// <summary>
+    /// A GET to this computer's own web server, with the site's name in the Host header (and as the TLS name for https sites).
+    /// Redirects are not followed, so a 301 to the login page is reported as what it is. The body is cut to what a person would read.
+    /// </summary>
+    async Task<DevProbe> IDevContext.ProbeAsync(DevSite site, string pathAndQuery, CancellationToken ct)
+    {
+        var st = _s.Settings;
+        var scheme = site.Https ? "https" : "http";
+        var port = site.Https ? st.HttpsPort : st.HttpPort;
+        var handler = new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false, ConnectTimeout = TimeSpan.FromSeconds(5) };
+        handler.SslOptions.TargetHost = site.Domain;   // the certificate is for the site's name, not 127.0.0.1
+        using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
+        using var rq = new HttpRequestMessage(HttpMethod.Get, $"{scheme}://127.0.0.1:{port}{pathAndQuery}");
+        rq.Headers.Host = site.Domain;
+        rq.Headers.UserAgent.ParseAdd("RhapsodyServer-Assistant/1.0");
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            using var rs = await http.SendAsync(rq, HttpCompletionOption.ResponseHeadersRead, ct);
+            var type = rs.Content.Headers.ContentType?.MediaType ?? "";
+            string body;
+            if (type.StartsWith("text/", StringComparison.OrdinalIgnoreCase) || type.Contains("json") || type.Contains("xml") || type.Length == 0)
+            {
+                await using var stream = await rs.Content.ReadAsStreamAsync(ct);
+                var buf = new byte[200_000];
+                var n = 0; int r;
+                while (n < buf.Length && (r = await stream.ReadAsync(buf.AsMemory(n, buf.Length - n), ct)) > 0) n += r;
+                body = Encoding.UTF8.GetString(buf, 0, n);
+                if (type.Contains("html", StringComparison.OrdinalIgnoreCase) || body.TrimStart().StartsWith('<'))
+                    body = Regex.Replace(Regex.Replace(body, @"(?is)<(script|style).*?</\1>", " "), "<[^>]+>", " ");
+                body = Regex.Replace(System.Net.WebUtility.HtmlDecode(body), @"\s+", " ").Trim();
+                if (body.Length > 2500) body = body[..2500] + "…";
+            }
+            else body = $"({type}, {rs.Content.Headers.ContentLength?.ToString("N0") ?? "unknown"} bytes, not shown)";
+            sw.Stop();
+
+            var headers = new List<string>();
+            foreach (var name in new[] { "Content-Type", "Location", "Server", "X-Powered-By", "Cache-Control" })
+                if (rs.Headers.TryGetValues(name, out var hv) || rs.Content.Headers.TryGetValues(name, out hv)) headers.Add($"{name}: {string.Join(",", hv!)}");
+            return new DevProbe((int)rs.StatusCode, rs.ReasonPhrase, sw.Elapsed.TotalMilliseconds, headers, body, null);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or System.Security.Authentication.AuthenticationException)
+        {
+            if (ct.IsCancellationRequested) throw;
+            var why = ex.InnerException is System.Security.Authentication.AuthenticationException || ex is System.Security.Authentication.AuthenticationException
+                ? "the HTTPS certificate wasn't accepted (" + (ex.InnerException?.Message ?? ex.Message) + ")"
+                : ex.Message;
+            return new DevProbe(null, null, sw.Elapsed.TotalMilliseconds, Array.Empty<string>(), "", why);
+        }
+    }
 
     static readonly Regex PhpBranchRx = new(@"(?i)php[\s\-_\\/]*(\d\.\d)\b", RegexOptions.Compiled);
 

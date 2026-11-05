@@ -218,6 +218,21 @@ details.ai-backup[open] > summary { margin-bottom: .7rem; }
 .ai-who { color: var(--muted); font-size: .8125rem; overflow-wrap: anywhere; }
 details.sent summary { cursor: pointer; font-size: .875rem; color: var(--muted); }
 details.sent pre.log { margin-top: .5rem; max-height: 30vh; }
+/* Ask */
+.ask-form { display: grid; gap: .8rem; max-width: 46rem; margin-top: 1.1rem; }
+.ask-form textarea { width: 100%; font: inherit; padding: .6rem .7rem; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); color: inherit; resize: vertical; min-height: 5.5rem; }
+.ask-form textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ask-row { display: flex; flex-wrap: wrap; gap: .6rem 1rem; align-items: center; }
+.ask-row label { display: flex; gap: .45rem; align-items: center; font-weight: 400; font-size: .9rem; }
+.ask-ideas { display: flex; flex-wrap: wrap; gap: .35rem; }
+.ask-out { display: grid; gap: .9rem; max-width: 46rem; margin-top: 1.3rem; }
+.ask-live { margin: .2rem 0 0; padding-left: 1.3rem; display: grid; gap: .2rem; color: var(--muted); font-size: .875rem; }
+.ask-steps { margin: .6rem 0 0; padding-left: 1.3rem; display: grid; gap: .55rem; font-size: .875rem; }
+.ask-steps .bad { color: var(--bad); }
+.ask-steps details { margin-top: .25rem; }
+.ask-steps summary { cursor: pointer; color: var(--muted); font-size: .8125rem; }
+.ask-steps pre.log { margin-top: .4rem; max-height: 24vh; }
+.ask-out .answer { max-height: none; }
 /* where things are stored, and the Help page */
 .where { display: flex; flex-wrap: wrap; gap: .45rem .7rem; align-items: center; margin: -.5rem 0 1.1rem; font-size: .9rem; }
 .where .mono, .notice .mono { overflow-wrap: anywhere; }
@@ -279,6 +294,7 @@ dialog form.contents { display: contents; padding: 0; }
       <a href="#/versions" data-route="versions">Versions</a>
       <a href="#/modules" data-route="modules">Modules</a>
       <a href="#/profiler" data-route="profiler">Profiler</a>
+      <a href="#/ask" data-route="ask">Ask</a>
       <a href="#/ai" data-route="ai">AI help</a>
       <a href="#/help" data-route="help">Help</a>
     </nav>
@@ -289,7 +305,7 @@ dialog form.contents { display: contents; padding: 0; }
   </aside>
   <main id="view" aria-live="off"></main>
 </div>
-<div class="notice warn conn" id="connWarn" role="status" hidden>Lost the connection to Rhapsody Server. Reconnecting…</div>
+<div class="notice warn conn" id="connWarn" role="status" hidden>Lost the connection to Rhapsody Server. It may have been quit. <a href="rhapsody://open">Start it again</a>; this page reconnects on its own.</div>
 
 <dialog id="dlgActivity" class="activity" aria-labelledby="actTitle" aria-describedby="actMsg">
   <div class="body" role="status" aria-live="polite">
@@ -536,9 +552,20 @@ dialog form.contents { display: contents; padding: 0; }
       h('td', { class: 'path', title: site.root }, site.root, site.publicDir ? h('div', { class: 'small' }, 'serves /' + site.publicDir) : null),
       h('td', { class: 'act' },
         S.canOpenFolder ? openBtn('site', site.name, 'Open folder', 'btn sm') : null, ' ',
+        h('button', { class: 'btn sm', type: 'button', title: 'Asks the web server for this site and shows what came back, plus the web server and PHP error logs',
+          onclick: e => checkSite(site, e.currentTarget) }, 'Test'), ' ',
         h('button', { class: 'btn sm quiet danger', disabled: busy(), onclick: () => removeSite(site) }, 'Remove'))));
     return h('div', {}, head, lede, where, h('div', { class: 'table-wrap' },
       h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Address'), h('th', {}, 'PHP'), h('th', {}, 'Folder'), h('th', {}))), h('tbody', {}, rows))));
+  }
+
+  async function checkSite(site, btn) {
+    btn.disabled = true; btn.textContent = 'Testing…';
+    try {
+      const r = await api('POST', `/api/sites/${encodeURIComponent(site.name)}/check`, {});
+      paintActivity('done', 'Test: ' + site.domain, '', r.report);
+    } catch (e) { err = e.message; render(); }
+    finally { if (btn.isConnected) { btn.disabled = false; btn.textContent = 'Test'; } }
   }
 
   async function removeSite(site) {
@@ -625,7 +652,7 @@ dialog form.contents { display: contents; padding: 0; }
   }
 
   // ---- modules: PHP extensions and Apache modules
-  const M = { tab: 'php', php: null, apache: null, branch: null, draftPhp: new Set(), draftApache: new Set() };
+  const M = { tab: 'php', php: null, apache: null, branch: null, draftPhp: new Set(), draftApache: new Set(), iniMsg: null };
   const sameSet = (a, b) => a.size === b.size && [...a].every(x => b.has(x));
 
   async function loadModules() {
@@ -659,6 +686,32 @@ dialog form.contents { display: contents; padding: 0; }
     return { list, search };
   }
 
+  // The php.ini this PHP really loads. The page names the version and the action; the app picks the file.
+  async function openIni(action) {
+    err = null;
+    try {
+      await api('POST', '/api/php/ini', { branch: M.php.branch, action });
+      M.iniMsg = action === 'edit'
+        ? 'Opened in your editor. Save it, then restart PHP so it takes effect. Write your own settings under the “Your settings” line at the bottom: everything above it is rewritten when you change extensions.'
+        : null;
+    } catch (e) { err = e.message; }
+    render();
+  }
+
+  function iniRow() {
+    if (!M.php.iniPath) return null;
+    const br = M.php.branch;
+    return h('div', { class: 'pathrow', style: 'margin-top:.9rem' },
+      h('div', { class: 'pl' }, `php.ini for PHP ${br}`),
+      h('code', { class: 'pathbox', tabindex: 0 }, M.php.iniPath),
+      h('div', { class: 'btns' },
+        S.canOpenFolder ? h('button', { class: 'btn sm primary', type: 'button', disabled: busy(), onclick: () => openIni('edit') }, 'Edit php.ini') : null,
+        S.canOpenFolder ? h('button', { class: 'btn sm', type: 'button', disabled: busy(), onclick: () => openIni('reveal') }, 'Show in folder') : null,
+        copyBtn(M.php.iniPath),
+        M.php.workersRunning ? h('button', { class: 'btn sm', type: 'button', disabled: busy(), onclick: () => { M.iniMsg = null; act(() => api('POST', `/api/php/${br}/restart`)); } }, `Restart PHP ${br}`) : null),
+      M.iniMsg ? h('p', { class: 'muted small', role: 'status' }, M.iniMsg) : null);
+  }
+
   function applyBar(changes, note, onApply, onReset) {
     return h('div', { class: 'modbar' },
       h('span', { class: 'grow muted small' }, changes ? `${changes} unsaved change${changes === 1 ? '' : 's'}. ${note}` : note),
@@ -678,10 +731,11 @@ dialog form.contents { display: contents; padding: 0; }
       const original = new Set(M.php.extensions.filter(x => x.enabled).map(x => x.name));
       const changes = [...M.draftPhp].filter(x => !original.has(x)).length + [...original].filter(x => !M.draftPhp.has(x)).length;
       const { list, search } = moduleList(M.php.extensions, M.draftPhp);
-      const picker = h('select', { 'aria-label': 'PHP version', onchange: e => { M.branch = e.target.value; M.php = null; render(); loadModules(); } },
+      const picker = h('select', { 'aria-label': 'PHP version', onchange: e => { M.branch = e.target.value; M.php = null; M.iniMsg = null; render(); loadModules(); } },
         M.php.branches.map(b => h('option', { value: b, selected: b === M.php.branch }, 'PHP ' + b + (b === S.settings.defaultPhp ? ' (default)' : ''))));
       return h('div', {}, head,
         h('p', { class: 'lede muted' }, 'Choose which extensions PHP loads. Each PHP version has its own list.'),
+        iniRow(),
         h('div', { class: 'mod-tools' }, picker, search),
         list,
         applyBar(changes, M.php.workersRunning ? `Applying restarts PHP ${M.php.branch}.` : 'Takes effect the next time PHP starts.',
@@ -729,7 +783,7 @@ dialog form.contents { display: contents; padding: 0; }
 
   async function loadAi() {
     try { A = await api('GET', '/api/ai'); if (!D.main) resetDraft(); } catch (e) { if (e.status !== 401) err = e.message; }
-    if (route() === 'ai') render();
+    if (route() === 'ai' || route() === 'ask') render();
   }
 
   function aiSection(title, d, saved, onChange, slot) {
@@ -876,6 +930,100 @@ dialog form.contents { display: contents; padding: 0; }
     try { await navigator.clipboard.writeText(aiPlain); b.textContent = 'Copied'; } catch { b.textContent = 'Couldn’t copy'; }
     setTimeout(() => { b.textContent = 'Copy answer'; }, 1400);
   });
+
+  // ---- Ask: a question in the person's own words, answered by an assistant that looks at logs, the profiler and the site's files
+  let askQ = '', askSite = '', askBusy = false, askLive = [], askResult = null, askError = null, askId = '', askCtl = null, askAllow = false;
+  try { askAllow = localStorage.getItem('rhapsody-server.askAllow') === '1'; } catch { /* private window: the box just starts unticked */ }
+  const ASK_IDEAS = ['Why is the page I just loaded slow?', 'Why am I getting a 500 error?', 'Is anything wrong in the PHP error log?', 'Which SQL query costs the most?'];
+
+  function paintAskLive() {
+    const box = $('#askLive');
+    if (box) box.replaceChildren(...askLive.map(t => h('li', {}, t)));
+  }
+
+  async function ask() {
+    const q = askQ.trim();
+    if (!q || askBusy) return;
+    askBusy = true; askResult = null; askError = null; askLive = [];
+    askId = Math.random().toString(36).slice(2);
+    const mine = askCtl = new AbortController();
+    render();
+    try {
+      const r = await api('POST', '/api/ai/ask', { question: q, site: askSite || null, allowRequests: askAllow, askId }, mine.signal);
+      if (mine.signal.aborted) return;
+      askResult = r;
+    } catch (e) {
+      if (mine.signal.aborted || e.name === 'AbortError') return;
+      if (e.status === 401) { askBusy = false; S = null; renderLocked(); return; }
+      askError = e.message;
+    }
+    askBusy = false; render();
+  }
+
+  function stopAsk() {
+    if (askCtl) askCtl.abort();
+    api('POST', '/api/ai/cancel').catch(() => { /* it is stopping anyway; the page no longer waits */ });
+    askBusy = false; askLive = []; render();
+  }
+
+  function viewAsk() {
+    const head = h('div', { class: 'page-head' }, h('h1', {}, 'Ask'));
+    if (!A) return h('div', {}, head, h('p', { class: 'lede muted' }, 'Loading…'));
+    if (!aiReady())
+      return h('div', {}, head, h('div', { class: 'empty' },
+        h('p', {}, 'Ask needs AI help to be switched on.'),
+        h('p', { class: 'muted small' }, 'Choose a provider, add a key and turn it on. Ollama runs on this computer and sends nothing out.'),
+        h('a', { class: 'btn primary', href: '#/ai' }, 'Set up AI help')));
+
+    const box = h('textarea', { id: 'askQ', rows: 3, maxlength: 2000, 'aria-label': 'Your question', disabled: askBusy,
+      placeholder: 'Why does /products/123 load slowly?   Why am I getting a 500 error?',
+      oninput: e => { askQ = e.target.value; const b = $('#askGo'); if (b) b.disabled = !askQ.trim(); },
+      onkeydown: e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); ask(); } } }, askQ);
+
+    const site = h('select', { 'aria-label': 'Site', disabled: askBusy, onchange: e => { askSite = e.target.value; } },
+      h('option', { value: '' }, 'Any site'),
+      S.sites.map(x => h('option', { value: x.name, selected: x.name === askSite }, x.domain)));
+
+    const allow = h('input', { type: 'checkbox', checked: askAllow, disabled: askBusy,
+      onchange: e => { askAllow = e.target.checked; try { localStorage.setItem('rhapsody-server.askAllow', askAllow ? '1' : '0'); } catch { /* not remembered */ } } });
+
+    const form = h('div', { class: 'ask-form' },
+      box,
+      !askQ && !askBusy ? h('div', { class: 'ask-ideas' }, ASK_IDEAS.map(t => h('button', { class: 'btn sm quiet', type: 'button',
+        onclick: () => { askQ = t; render(); $('#askQ')?.focus(); } }, t))) : null,
+      h('div', { class: 'ask-row' },
+        askBusy
+          ? h('button', { class: 'btn', type: 'button', onclick: stopAsk }, 'Stop')
+          : h('button', { class: 'btn primary', type: 'button', id: 'askGo', disabled: !askQ.trim(), onclick: ask }, 'Ask'),
+        h('label', {}, 'Site', site),
+        h('label', {}, allow, 'Let it load pages from my sites (GET only)')),
+      h('p', { class: 'muted small' }, 'It reads your logs, the profiler and your site’s files, and never changes anything. What it reads is sent to your AI provider after passwords and keys are removed. Ctrl+Enter asks.'));
+
+    const out = h('div', { class: 'ask-out', 'aria-live': 'polite' });
+    if (askBusy)
+      out.append(h('div', { class: 'ai-wait' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }), 'Investigating… this can take up to a minute.'),
+        h('ol', { class: 'ask-live', id: 'askLive' }, askLive.map(t => h('li', {}, t))));
+    else if (askError)
+      out.append(h('p', { class: 'ai-status bad', role: 'alert' }, askError), h('a', { class: 'btn sm', href: '#/ai' }, 'AI settings'));
+    else if (askResult) {
+      const r = askResult;
+      out.append(renderAnswer(r.answer),
+        h('p', { class: 'ai-who' }, `Answered by ${r.provider} (${r.model}) after ${r.steps.length} lookup${r.steps.length === 1 ? '' : 's'}. AI can be wrong; check before you change anything important.`
+          + (r.usedFallback ? `\n${r.fallbackNote}` : '') + (r.hitLimit ? '\nIt reached its lookup limit, so treat this as a best guess.' : '')),
+        h('button', { class: 'btn sm', type: 'button', onclick: async e => {
+          const b = e.currentTarget;
+          try { await navigator.clipboard.writeText(r.answer); b.textContent = 'Copied'; } catch { b.textContent = 'Couldn’t copy'; }
+          setTimeout(() => { if (b.isConnected) b.textContent = 'Copy answer'; }, 1400);
+        } }, 'Copy answer'),
+        r.steps.length ? h('details', { class: 'sent' },
+          h('summary', {}, `What it looked at (${r.steps.length})`),
+          h('ol', { class: 'ask-steps' }, r.steps.map(s => h('li', {},
+            h('div', { class: s.failed ? 'bad' : '' }, s.summary + (s.failed ? ' (did not work)' : '')),
+            h('details', {}, h('summary', {}, 'What the AI was shown'), h('pre', { class: 'log', tabindex: 0 }, s.result)))))) : null);
+    }
+    return h('div', {}, head,
+      h('p', { class: 'lede muted' }, 'Ask about a slow page, an error or anything odd on your sites, in your own words.'), form, out);
+  }
 
   // ---- shell
   function banners() {
@@ -1032,11 +1180,11 @@ dialog form.contents { display: contents; padding: 0; }
 
   function render() {
     if (!S) return;
-    const r = ['services', 'sites', 'versions', 'modules', 'profiler', 'ai', 'help'].includes(route()) ? route() : 'services';
+    const r = ['services', 'sites', 'versions', 'modules', 'profiler', 'ask', 'ai', 'help'].includes(route()) ? route() : 'services';
     document.querySelectorAll('.rail nav a').forEach(a => {
       if (a.dataset.route === r) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     });
-    const view = { services: viewServices, sites: viewSites, versions: viewVersions, modules: viewModules, profiler: viewProfiler, ai: viewAi, help: viewHelp }[r]();
+    const view = { services: viewServices, sites: viewSites, versions: viewVersions, modules: viewModules, profiler: viewProfiler, ask: viewAsk, ai: viewAi, help: viewHelp }[r]();
     $('#view').replaceChildren(...banners(), view);
     renderActivity();
   }
@@ -1167,12 +1315,16 @@ dialog form.contents { display: contents; padding: 0; }
     es.addEventListener('changed', () => { clearTimeout(t); t = setTimeout(refresh, 80); });
     let tp;
     es.addEventListener('profile', () => { if (route() === 'profiler') { clearTimeout(tp); tp = setTimeout(loadProfile, 100); } });
+    es.addEventListener('ai', ev => {   // a lookup the assistant just started; only this page's own question counts
+      let d; try { d = JSON.parse(ev.data); } catch { return; }
+      if (askBusy && d.id === askId && typeof d.text === 'string') { askLive.push(d.text); paintAskLive(); }
+    });
     es.addEventListener('op', ev => { op = JSON.parse(ev.data); renderActivity(); if (!op.running) refresh(); });
     es.onopen = () => { conn = true; connectedOnce = true; $('#connWarn').hidden = true; };
     es.onerror = () => { conn = false; if (connectedOnce) $('#connWarn').hidden = false; };
   }
 
-  addEventListener('hashchange', () => { if (S) { render(); if (route() === 'profiler') loadProfile(); if (route() === 'modules') loadModules(); if (route() === 'ai') loadAi(); } });
+  addEventListener('hashchange', () => { if (S) { render(); if (route() === 'profiler') loadProfile(); if (route() === 'modules') loadModules(); if (route() === 'ai' || route() === 'ask') loadAi(); } });
   refresh().then(() => { if (S) { connect(); loadAi(); if (route() === 'profiler') loadProfile(); if (route() === 'modules') loadModules(); } });
 })();
 </script>

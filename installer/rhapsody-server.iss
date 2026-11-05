@@ -20,7 +20,7 @@ SolidCompression=no
 ; the bundled zips are already compressed, so there is little to gain from heavier settings
 
 [Tasks]
-Name: "autostart"; Description: "Start Rhapsody Server when I sign in"; Flags: unchecked
+Name: "autostart"; Description: "Start Rhapsody Server when I sign in (keeps the dashboard address always available)"
 
 [Files]
 Source: "..\dist\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
