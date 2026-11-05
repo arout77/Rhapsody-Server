@@ -264,6 +264,16 @@ public sealed class DashboardServer : IDisposable
                     return;
                 }
 
+                case ("GET", "log-sources") when a2 == "":
+                    await SendAsync(res, 200, _backend.GetLogSources());
+                    return;
+                case ("GET", "log-sources") when Regex.IsMatch(a2, @"^[a-z0-9.\-]+$"):
+                {
+                    var take = int.TryParse(req.QueryString["lines"], out var ln) ? Math.Clamp(ln, 1, 5000) : 2000;
+                    await SendAsync(res, 200, _backend.ReadLogSource(a2, take));
+                    return;
+                }
+
                 case ("POST", "php") when a2 == "ini":
                     _backend.OpenPhpIni(await Body<PhpIniRequest>(req));
                     await SendAsync(res, 200, new { ok = true });

@@ -27,6 +27,13 @@ public sealed record VersionRequest(string Id, string Series);
 
 /// <param name="Target"><c>sites</c> (where new sites are created), <c>site</c> (one site's folder, by Name), <c>data</c> (the app's own files) or <c>logs</c>.</param>
 public sealed record OpenFolderRequest(string Target, string? Name);
+
+/// <param name="Id">Names one log file. The page only ever sends this; the app owns the path.</param>
+/// <param name="Group">The program the file belongs to (Nginx, PHP, MariaDB…); the page uses it for the list headings and the icon.</param>
+/// <param name="ExplainId">The service whose log the AI "Explain" reads for this file, or null.</param>
+public sealed record LogSourceDto(string Id, string Name, string Group, string Detail, long Size, string? ExplainId);
+/// <param name="Truncated">True when the file is bigger than what was read, so these are only its last lines.</param>
+public sealed record LogContentDto(string Text, long Size, bool Truncated);
 /// <param name="Branch">Which PHP's php.ini; null = the default PHP. The page never names a path.</param>
 /// <param name="Action"><c>edit</c> (open in the person's editor) or <c>reveal</c> (show it in its folder).</param>
 public sealed record PhpIniRequest(string? Branch, string Action);
@@ -107,6 +114,11 @@ public interface IDashboardBackend
 
     /// <summary>Shows a known folder in Windows Explorer. Throws ArgumentException for an unknown target or a folder that is gone.</summary>
     void OpenFolder(OpenFolderRequest req);
+
+    /// <summary>Every log file that exists right now, grouped by program.</summary>
+    LogSourceDto[] GetLogSources();
+    /// <summary>The last lines of one log file from <see cref="GetLogSources"/>. Throws ArgumentException for an id that isn't one.</summary>
+    LogContentDto ReadLogSource(string id, int lines);
 
     /// <summary>Opens (or shows in its folder) the php.ini a PHP version really loads. Throws ArgumentException for an unknown action or a PHP that isn't installed.</summary>
     void OpenPhpIni(PhpIniRequest req);

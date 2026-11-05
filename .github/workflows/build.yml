@@ -1,0 +1,92 @@
+name: Build
+
+# Every push and pull request: compile everything (the tray app too) and run the smoke tests.
+# Push a tag like v0.3 (or run this by hand): also builds RhapsodyServer-Setup.exe. A tag publishes it as a GitHub release.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      installer:
+        description: 'Also build RhapsodyServer-Setup.exe'
+        type: boolean
+        default: true
+      fresh_bundle:
+        description: 'Download the newest PHP / Apache / nginx / MariaDB instead of using the bundle folder in the repo'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # only used to attach the installer to a release
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build everything
+        run: dotnet build RhapsodyServer.sln -c Release
+
+      - name: Smoke tests
+        run: dotnet run --project tests/RhapsodyServer.SmokeTests -c Release --no-build
+
+      # ---- installer: only for tags and manual runs --------------------------------------------------------------
+      - name: Download PHP, Apache, nginx, MariaDB and tools
+        id: bundle
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.installer }}
+        shell: pwsh
+        run: |
+          # The bundle folder is committed to the repo, so normally it is already complete. "fresh_bundle" re-downloads it.
+          if ('${{ inputs.fresh_bundle }}' -eq 'true' -and (Test-Path bundle)) { Remove-Item bundle -Recurse -Force }
+          dotnet run --project tools/RhapsodyServer.Bundler -c Release -- --verify bundle
+          if ($LASTEXITCODE -eq 0) { Write-Host 'Bundle already complete.'; exit 0 }
+          dotnet run --project tools/RhapsodyServer.Bundler -c Release -- --out bundle
+          if ($LASTEXITCODE -eq 0) { exit 0 }
+          # Apache Lounge often refuses scripted downloads. Fallback: a Win64 Apache zip you uploaded once to a
+          # release named "bundle-assets" (file name like httpd-2.4.xx-...-win64-VS17.zip).
+          Write-Host '::warning::The bundler failed; trying the Apache zip from the bundle-assets release.'
+          gh release download bundle-assets --pattern 'httpd-*.zip' --dir apache-fallback --clobber
+          if ($LASTEXITCODE -ne 0) { Write-Error 'No bundle-assets release with an Apache zip. See .github/workflows/build.yml.'; exit 1 }
+          $zip = (Get-ChildItem apache-fallback -Filter 'httpd-*.zip' | Select-Object -First 1).FullName
+          dotnet run --project tools/RhapsodyServer.Bundler -c Release -- --out bundle --apache-zip $zip
+          exit $LASTEXITCODE
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Publish the app
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.installer }}
+        shell: cmd
+        run: publish.cmd
+
+      - name: Build the installer
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.installer }}
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ISCC.exe -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { $iscc = (Get-Command ISCC.exe).Source }
+          $ver = if ('${{ github.ref_type }}' -eq 'tag') { '${{ github.ref_name }}'.TrimStart('v') } else { '0.0.0-dev' }
+          & $iscc "/DAppVersion=$ver" installer\rhapsody-server.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.installer }}
+        with:
+          name: RhapsodyServer-Setup
+          path: installer-out/RhapsodyServer-Setup.exe
+
+      - name: Attach to the release
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        shell: pwsh
+        run: gh release create '${{ github.ref_name }}' installer-out/RhapsodyServer-Setup.exe --title '${{ github.ref_name }}' --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

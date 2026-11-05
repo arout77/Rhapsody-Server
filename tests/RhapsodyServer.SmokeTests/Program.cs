@@ -1222,11 +1222,15 @@ await Check("dashboard page: web server switch, activity window, sidebar tools, 
     foreach (var must in new[] { "id=\"dlgActivity\"", "id=\"lnkPma\"", "id=\"lnkMail\"", "aria-label': 'Web server'", "https://www.apachelounge.com/download/",
         "is-default", "is-active", "/api/versions/import-apache", "name=\"dbPass\"" })
         True(html.Contains(must), "missing: " + must);
-    foreach (var must in new[] { "data-route=\"ai\"", "id=\"dlgAi\"", "id=\"actExplain\"", "id=\"logExplain\"", "/api/ai/explain", "/api/ai/test", "Backup provider" })
+    foreach (var must in new[] { "data-route=\"ai\"", "id=\"dlgAi\"", "id=\"actExplain\"", "Explain this log", "/api/ai/explain", "/api/ai/test", "Backup provider" })
         True(html.Contains(must), "missing: " + must);
     True(!html.Contains("innerHTML"), "model output is rendered from DOM nodes, never as markup");
     foreach (var must in new[] { "data-route=\"help\"", "Where your code is stored", "id=\"whereRh\"", "/api/open", "&go=", "Open folder" })
         True(html.Contains(must), "missing: " + must);
+    foreach (var must in new[] { "data-route=\"logs\"", "/api/log-sources", ">Stack<", ">Debug<", "id=\"i-file\"", "log-row" })
+        True(html.Contains(must), "missing: " + must);
+    True(!html.Contains("dlgLog"), "logs are a page now, not a pop-up");
+    True(!html.Contains(" style=\""), "the page's policy forbids inline styles");
     True(!html.Contains("id=\"activity\""), "the bottom status bar is gone");
     True(!html.Contains("Open phpMyAdmin"), "the links moved to the sidebar");
 });
@@ -1707,6 +1711,53 @@ await Check("php.ini API: needs the token; opens through the backend; bad input 
     True(c4 == HttpStatusCode.OK || c4 == HttpStatusCode.Accepted, c4.ToString());
     Eq("8.5", fake.Restarted.Single());
     Eq(HttpStatusCode.NotFound, (await Call(Req(HttpMethod.Post, "/api/php/..%5Cx/restart", new { }))).Item1);
+});
+await Check("logs page (real backend): lists only files that exist, grouped; reads by id from a fixed list; a path is never accepted", async () =>
+{
+    var paths = new ServerPaths(Path.Combine(tmpRoot, "logsrc")); paths.EnsureCreated();
+    using var stack = new Stack(paths, new Installer(paths, new HttpClient(new ThrowingHandler())));
+    stack.Settings.DefaultPhp = "8.5";
+    var be = new StackBackend(stack, null, null, new RecordingOpener());
+    Eq(0, be.GetLogSources().Length);                                  // nothing has run yet: nothing to list
+
+    Directory.CreateDirectory(Path.Combine(paths.Etc, "nginx", "logs")); Directory.CreateDirectory(Path.Combine(paths.Data, "php-tmp"));
+    File.WriteAllText(Path.Combine(paths.Logs, "nginx.log"), "started\n");
+    File.WriteAllText(Path.Combine(paths.Etc, "nginx", "logs", "error.log"), "2026/11/05 09:00:01 [error] 1#0: boom\n");
+    File.WriteAllText(Path.Combine(paths.Logs, "php-8.5.log"), "worker up\n");
+    File.WriteAllText(Path.Combine(paths.Data, "php-tmp", "php_error.log"), "[05-Nov-2026 09:00:01 UTC] PHP Warning:  x\n");
+    var list = be.GetLogSources();
+    True(list.Select(x => x.Id).OrderBy(x => x).SequenceEqual(new[] { "nginx", "nginx-error", "php-8.5", "php-error" }), string.Join(",", list.Select(x => x.Id)));
+    True(list.Where(x => x.Id.StartsWith("nginx")).All(x => x.Group == "Nginx") && list.Where(x => x.Id.StartsWith("php")).All(x => x.Group == "PHP"));
+    Eq("nginx", list.Single(x => x.Id == "nginx-error").ExplainId!);   // "Explain" reads the service's own log
+    True(list.Single(x => x.Id == "php-error").Size > 0);
+
+    var one = be.ReadLogSource("nginx-error", 50);
+    True(one.Text.Contains("[error] 1#0: boom") && !one.Truncated && one.Size == new FileInfo(Path.Combine(paths.Etc, "nginx", "logs", "error.log")).Length);
+
+    File.WriteAllText(Path.Combine(paths.Logs, "nginx.log"), string.Concat(Enumerable.Range(0, 20000).Select(i => $"line {i:D6} padding padding padding\n")));
+    var big = be.ReadLogSource("nginx", 2000);
+    True(big.Truncated && big.Size > 256 * 1024, "a huge file says so");
+    True(big.Text.Contains("line 019999") && !big.Text.Contains("line 000000"), "only the end of it is read");
+
+    string Refused(string id) { try { be.ReadLogSource(id, 10); } catch (ArgumentException ex) { return ex.Message; } throw new Exception("expected a refusal: " + id); }
+    foreach (var bad in new[] { "../etc/passwd", @"..\..\Windows\win.ini", "NGINX", "", "nginx.log", "php-9.9.9x" })
+        True(Refused(bad).Contains("no such log"), bad);                 // an id is looked up in the list, never used as a path
+    var none = be.ReadLogSource("apache", 10);                         // a real program that hasn't logged yet is an empty log, not an error
+    True(none.Text == "" && none.Size == 0 && !none.Truncated);
+    await Task.CompletedTask;
+});
+await Check("logs API: needs the token; lists and reads by id; unknown or odd ids are refused", async () =>
+{
+    Eq(HttpStatusCode.Unauthorized, (await Call(Req(HttpMethod.Get, "/api/log-sources", null, token: false))).Item1);
+    var (code, list) = await Call(Req(HttpMethod.Get, "/api/log-sources", null));
+    Eq(HttpStatusCode.OK, code);
+    var ids = list.EnumerateArray().Select(x => x.GetProperty("id").GetString()).ToArray();
+    True(ids.Contains("php-error") && ids.Contains("nginx-error"), string.Join(",", ids));
+    var (c2, one) = await Call(Req(HttpMethod.Get, "/api/log-sources/php-error?lines=20", null));
+    Eq(HttpStatusCode.OK, c2); True(one.GetProperty("text").GetString()!.Contains("PHP Fatal error") && !one.GetProperty("truncated").GetBoolean());
+    var (c3, bad) = await Call(Req(HttpMethod.Get, "/api/log-sources/nope", null));
+    Eq(HttpStatusCode.BadRequest, c3); True(bad.GetProperty("error").GetString()!.Contains("no such log"));
+    Eq(HttpStatusCode.NotFound, (await Call(Req(HttpMethod.Get, "/api/log-sources/..%5C..%5Cx", null))).Item1);
 });
 await Check("site test API: needs the token; returns the report; an unknown site is a readable 400", async () =>
 {

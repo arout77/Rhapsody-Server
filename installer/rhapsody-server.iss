@@ -4,9 +4,13 @@
   #error "dist\bundle is missing. Run bundle.cmd, then publish.cmd (without --no-bundle), then build this installer."
 #endif
 
+#ifndef AppVersion
+  #define AppVersion "0.2"
+#endif
+
 [Setup]
 AppName=Rhapsody Server
-AppVersion=0.2
+AppVersion={#AppVersion}
 AppPublisher=Rhapsody Server contributors
 SetupIconFile=rhapsody-server.ico
 UninstallDisplayIcon={app}\RhapsodyServer.exe

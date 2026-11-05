@@ -224,6 +224,23 @@ sealed class FakeBackend : IDashboardBackend
     public Task<string> CheckSiteAsync(string name, CancellationToken ct) =>
         Task.FromResult(name == "gone" ? throw new ArgumentException($"There is no site called \"{name}\".") : $"Site: {name}.test\nRequest answered: 200 OK");
 
+    // Sample logs in the formats the real programs write, so the Logs page can be tried (and tested) without Windows.
+    static readonly Dictionary<string, (string Name, string Group, string Detail, string Explain, string Text)> FakeLogs = new()
+    {
+        ["nginx-error"] = ("error.log", "Nginx", "what the web server reported", "nginx",
+            "2026/11/05 09:00:01 [notice] 4412#0: using the \"wsa\" event method\n2026/11/05 09:12:44 [warn] 4412#0: *7 an upstream response is buffered to a temporary file\n2026/11/05 09:13:02 [error] 4412#0: *9 connect() failed (10061) while connecting to upstream, client: 127.0.0.1, server: shop.test\n"),
+        ["php-error"] = ("php_error.log", "PHP", "errors and warnings from your code", "php-8.5",
+            "[05-Nov-2026 09:10:11 UTC] PHP Deprecated:  Implicit conversion from float to int loses precision in C:\\Sites\\shop\\app\\Cart.php on line 41\n[05-Nov-2026 09:11:20 UTC] PHP Warning:  Undefined array key \"sku\" in C:\\Sites\\shop\\app\\Cart.php on line 58\n[05-Nov-2026 09:12:30 UTC] PHP Fatal error:  Uncaught TypeError: Cart::total(): Argument #1 must be of type array, null given in C:\\Sites\\shop\\app\\Cart.php:77\nStack trace:\n#0 C:\\Sites\\shop\\app\\Checkout.php(12): Cart->total(NULL)\n#1 {main}\n  thrown in C:\\Sites\\shop\\app\\Cart.php on line 77\n"),
+        ["mariadb"] = ("mariadb.log", "MariaDB", "database server output", "mariadb",
+            "2026-11-05  9:00:00 0 [Note] mysqld (MariaDB 11.8) starting as process 5120 ...\n2026-11-05  9:00:02 0 [Warning] InnoDB: Cannot open table mysql/gtid_slave_pos from the internal data dictionary\n2026-11-05  9:00:03 0 [Note] mysqld: ready for connections.\n"),
+        ["redis"] = ("redis.log", "Redis", "cache server output", "redis",
+            "5231:M 05 Nov 2026 09:00:00.100 * Ready to accept connections tcp\n5231:M 05 Nov 2026 09:05:00.200 # WARNING overcommit_memory is set to 0\n"),
+    };
+    public LogSourceDto[] GetLogSources() =>
+        FakeLogs.Select(kv => new LogSourceDto(kv.Key, kv.Value.Name, kv.Value.Group, kv.Value.Detail, kv.Value.Text.Length, kv.Value.Explain)).ToArray();
+    public LogContentDto ReadLogSource(string id, int lines) =>
+        FakeLogs.TryGetValue(id, out var l) ? new LogContentDto(l.Text, l.Text.Length, false) : throw new ArgumentException("There is no such log.");
+
     /// <summary>php.ini requests as "branch:action", in order.</summary>
     public readonly List<string> IniRequests = new();
     public readonly List<string> Restarted = new();

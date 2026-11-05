@@ -216,11 +216,12 @@ public sealed class StackBackend : IDashboardBackend, IDevContext
 
     // ------------------------------------------------------------------- logs
     /// <summary>The last lines of a text file that another program may still be writing to, or null if it isn't there or is empty.</summary>
+    const int TailBytes = 256 * 1024;
     static string? TailOf(string path, int lines)
     {
         if (!File.Exists(path)) return null;
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        const int Tail = 256 * 1024;
+        const int Tail = TailBytes;
         if (fs.Length > Tail) fs.Seek(-Tail, SeekOrigin.End);
         using var sr = new StreamReader(fs);
         var all = sr.ReadToEnd().Replace("\r\n", "\n").Split('\n');
@@ -245,6 +246,51 @@ public sealed class StackBackend : IDashboardBackend, IDevContext
             parts.Add($"----- error log ({Path.GetFileName(errorFile)}): what the program itself reported -----\n{err}");
 
         return parts.Count == 0 ? "(nothing logged yet)" : string.Join("\n\n", parts);
+    }
+
+    // ------------------------------------------------------- the Logs page
+    /// <summary>The fixed list of log files the Logs page may show. An id from the page is looked up here, never turned into a path.</summary>
+    IEnumerable<(string Id, string Name, string Group, string Detail, string Path, string? Explain)> LogFiles()
+    {
+        var logs = _s.Paths.Logs;
+        foreach (var web in new[] { "nginx", "apache" })
+        {
+            var g = web == "nginx" ? "Nginx" : "Apache";
+            yield return (web, web + ".log", g, "start, stop and program output", Path.Combine(logs, web + ".log"), web);
+            yield return (web + "-error", "error.log", g, "what the web server reported", Path.Combine(_s.Paths.Etc, web, "logs", "error.log"), web);
+        }
+        var branches = _s.BranchesInUse.OrderByDescending(b => b, VersionUtil.Comparer).ToList();
+        foreach (var b in branches)
+            yield return ($"php-{b}", $"php-{b}.log", "PHP", $"PHP {b} workers' output", Path.Combine(logs, $"php-{b}.log"), $"php-{b}");
+        yield return ("php-error", "php_error.log", "PHP", "errors and warnings from your code",
+            Path.Combine(_s.Paths.Data, "php-tmp", "php_error.log"), branches.Count > 0 ? $"php-{branches[0]}" : null);
+        yield return ("mariadb", "mariadb.log", "MariaDB", "database server output", Path.Combine(logs, "mariadb.log"), "mariadb");
+        yield return ("redis", "redis.log", "Redis", "cache server output", Path.Combine(logs, "redis.log"), "redis");
+        yield return ("mailpit", "mailpit.log", "Mailpit", "mail catcher output", Path.Combine(logs, "mailpit.log"), "mailpit");
+    }
+
+    public LogSourceDto[] GetLogSources()
+    {
+        var list = new List<LogSourceDto>();
+        foreach (var f in LogFiles())
+        {
+            try
+            {
+                var fi = new FileInfo(f.Path);
+                if (fi.Exists) list.Add(new LogSourceDto(f.Id, f.Name, f.Group, f.Detail, fi.Length, f.Explain));
+            }
+            catch (IOException) { }
+        }
+        return list.ToArray();
+    }
+
+    public LogContentDto ReadLogSource(string id, int lines)
+    {
+        var f = LogFiles().FirstOrDefault(x => x.Id == id);
+        if (f.Id == null) throw new ArgumentException("There is no such log.");
+        long size = 0;
+        try { var fi = new FileInfo(f.Path); if (fi.Exists) size = fi.Length; } catch (IOException) { }
+        return new LogContentDto(TailOf(f.Path, lines) ?? "", size, size > TailBytes);
     }
 
     // --------------------------------------------------------------- versions
