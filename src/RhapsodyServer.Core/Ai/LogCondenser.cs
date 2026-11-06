@@ -35,13 +35,20 @@ public static class LogCondenser
         if (entries.Count > maxEntries) { entries = entries.Skip(entries.Count - maxEntries).ToList(); dropped = true; }
 
         // Still too big: drop the oldest entries first, the newest are the most relevant.
+        // The note about dropped lines takes room too, so it is reserved up front once anything has to go.
+        const string Note = "(older log lines left out)";
         var total = entries.Sum(e => e.Length + 1);
         var start = 0;
-        while (total > maxChars && start < entries.Count - 1) { total -= entries[start].Length + 1; start++; dropped = true; }
+        if (dropped || total > maxChars) total += Note.Length + 1;
+        while (total > maxChars && start < entries.Count - 1)
+        {
+            total -=entries[start].Length + 1; start++; dropped = true;
+        }
 
+        // '\n' on purpose, not AppendLine: on Windows that adds "\r\n" and the text overshoots the budget.
         var sb = new StringBuilder();
-        if (dropped) sb.AppendLine("(older log lines left out)");
-        for (var i = start; i < entries.Count; i++) sb.AppendLine(entries[i]);
+        if (dropped) sb.Append(Note).Append('\n');
+        for (var i = start; i < entries.Count; i++) sb.Append(entries[i]).Append('\n');
         var result = sb.ToString().TrimEnd();
         return result.Length > maxChars ? "…" + result[^(maxChars - 1)..] : result;   // one giant last line
     }

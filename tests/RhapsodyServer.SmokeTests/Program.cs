@@ -237,7 +237,9 @@ VITE_PORT=5173
 CheckS("UpsertEnv keeps quote style, inline comments and untouched keys", () =>
 {
     var vals = RhapsodyScaffold.EnvValues(new Settings(), "my-app", "my-app.test");
-    var r = RhapsodyScaffold.UpsertEnv(RealisticEnv, vals);
+    // Git on Windows checks this file out with CRLF, which turns the raw string above into CRLF too (UpsertEnv
+    // correctly preserves that). Compare on LF so the test doesn't depend on the checkout's line endings.
+    var r = RhapsodyScaffold.UpsertEnv(RealisticEnv, vals).Replace("\r\n", "\n");
     True(r.Contains("DB_NAME=\"my_app\"") && r.Contains("DB_HOST=\"127.0.0.1\"") && r.Contains("DB_PORT=\"3306\""), "quoted keys stay quoted");
     True(r.Contains("DB_DRIVER=\"mysql\" # Supported databases: mysql, pgsql, sqlite, or sqlsrv"), "inline comment survives");
     True(r.Contains("MAIL_PORT=\"1025\"") && r.Contains("MAIL_USERNAME=\"\"") && !r.Contains("hunter2") && !r.Contains("someone@example.com"));
@@ -444,8 +446,17 @@ await Check("ReadyPort gates Running; child output lands in the log", async () =
     var log = Path.Combine(tmpRoot, "logs", "t4.log");
     var svc = new ManagedService(new ServiceSpec("t4", "echoer", "sh", new[] { "-c", "echo hello-from-child; sleep 30" }, tmpRoot, log, ReadyPort: port));
     await svc.StartAsync(); Eq(ServiceState.Running, svc.State);
+    // The port is already open, so Running is instant; on Windows sh can take a while to start and print.
+    // Wait for the output to arrive before stopping, otherwise the child gets killed before it says anything.
+    var seen = false;
+    for (var i = 0; i < 100 && !seen; i++)
+    {
+        try { using var fs = new FileStream(log, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete); using var sr = new StreamReader(fs); seen = sr.ReadToEnd().Contains("hello-from-child"); }
+        catch (IOException) { }
+        if (!seen) await Task.Delay(100);
+    }
     await svc.StopAsync(); l.Stop();
-    True(File.ReadAllText(log).Contains("hello-from-child"));
+    True(File.ReadAllText(log).Contains("hello-from-child"), "child output should reach the log");
 });
 await Check("custom stop command runs before kill", async () =>
 {
