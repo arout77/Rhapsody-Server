@@ -18,6 +18,37 @@ public static class RhapsodyScaffold
     public static string DbName(string name) => name.Replace('-', '_');
 
     /// <summary>
+    /// The oldest PHP the Rhapsody skeleton installs on (its composer.json says "php": "^8.4.1").
+    /// The dashboard, the scaffold and the tests all read this one value, so a framework bump is a one-line change.
+    /// </summary>
+    public const string MinPhp = "8.4.1";
+
+    /// <summary>True when this full version ("8.4.1", "8.5.0") meets <see cref="MinPhp"/>.</summary>
+    public static bool MeetsMinPhp(string version) => VersionUtil.Compare(version, MinPhp) >= 0;
+
+    /// <summary>
+    /// Could this PHP branch ("8.4") run Rhapsody? <paramref name="installedVersion"/> is the exact build on disk when there is one.
+    /// A branch that isn't installed yet counts when its series is newer than the minimum's, or equal to it: the build that
+    /// gets downloaded is then checked again against <see cref="MinPhp"/> before anything is installed.
+    /// </summary>
+    public static bool BranchCanRunRhapsody(string branch, string? installedVersion = null) =>
+        !string.IsNullOrEmpty(installedVersion) && installedVersion != branch
+            ? MeetsMinPhp(installedVersion)
+            : VersionUtil.Compare(branch, VersionUtil.Series(MinPhp)) >= 0;
+
+    /// <summary>
+    /// The PHP the new site gets: the one asked for if it can run Rhapsody, otherwise the default PHP if that can,
+    /// otherwise the newest branch that can. Null when no supported branch can.
+    /// </summary>
+    public static string? PickPhp(string requested, string defaultPhp, IEnumerable<string> branches, Func<string, string?>? installedVersion = null)
+    {
+        bool Ok(string b) => BranchCanRunRhapsody(b, installedVersion?.Invoke(b));
+        if (Ok(requested)) return requested;
+        if (Ok(defaultPhp)) return defaultPhp;
+        return branches.Where(Ok).OrderByDescending(b => b, VersionUtil.Comparer).FirstOrDefault();
+    }
+
+    /// <summary>
     /// Updates keys that exist, appends keys that don't, leaves everything else alone.
     /// An existing line keeps its quoting style and any trailing "# comment" (Rhapsody's .env quotes most values).
     /// </summary>
@@ -147,7 +178,21 @@ public static class RhapsodyScaffold
         Directory.CreateDirectory(parent);
         var package = req.Package ?? s.RhapsodyPackage;
 
+        // Rhapsody needs PHP 8.4.1+. Refuse here, before anything is downloaded or created, so no half-made site is left behind.
+        // (The dashboard already stops this choice; this is for any other caller.)
+        if (!BranchCanRunRhapsody(req.Php, stack.IsSeriesInstalled("php", req.Php) ? stack.InstalledPkg("php", req.Php).Version : null))
+            throw new ArgumentException($"Rhapsody needs PHP {MinPhp} or newer, and PHP {req.Php} is older. Choose PHP 8.4 or newer for this site.");
+
         await stack.EnsurePhpAsync(req.Php, p, ct);
+
+        // The exact build that will run composer: ask the binary itself, not the folder name ("8.4" could be 8.4.0).
+        var vr = await ProcessRunner.RunAsync(stack.PhpExe(req.Php), new[] { "-r", "echo PHP_VERSION;" }, env: stack.PhpEnv(req.Php), ct: ct);
+        var have = vr.Output.Trim();
+        if (!vr.Ok || !Regex.IsMatch(have, @"^\d+\.\d+\.\d+")) throw new InvalidOperationException($"Couldn't run PHP {req.Php} to check its version:\n" + vr.Output.Trim());
+        if (!MeetsMinPhp(have))
+            throw new InvalidOperationException($"Rhapsody needs PHP {MinPhp} or newer, but the PHP {req.Php} installed here is {have}. Update PHP {req.Php} in the Versions page (or pick a newer PHP) and try again.");
+        p?.Report($"Using PHP {have}.");
+
         await stack.Installer.EnsureAsync(Catalog.Composer, p, ct);
 
         // The skeleton's own install scripts run database migrations (Phinx) while composer is still creating the project,

@@ -459,7 +459,8 @@ button.log-row:hover { background: var(--hover); }
       <span class="hint" id="hintRh">Becomes my-app.test, with its own database, certificate and .env.</span>
       <span class="hint" id="whereRh"></span>
     </label>
-    <label>PHP version <select name="php" data-php></select></label>
+    <label>PHP version <select name="php" id="rhPhp"></select></label>
+    <div class="notice warn" id="rhPhpNote" role="note"><div id="rhPhpText"></div></div>
     <details class="dbopts">
       <summary>Database <span class="opt">(optional)</span></summary>
       <div class="dbgrid">
@@ -683,7 +684,7 @@ button.log-row:hover { background: var(--hover); }
   function viewSites() {
     const head = h('div', { class: 'page-head' }, h('h1', {}, 'Sites'),
       h('div', { class: 'actions' },
-        h('button', { class: 'btn primary', disabled: busy(), onclick: () => $('#dlgRhapsody').showModal() }, 'New Rhapsody site'),
+        h('button', { class: 'btn primary', disabled: busy(), onclick: openRhapsody }, 'New Rhapsody site'),
         h('button', { class: 'btn', disabled: busy(), onclick: () => $('#dlgExisting').showModal() }, 'Add existing folder')));
     const lede = h('p', { class: 'lede muted' }, `Each site gets its own .${S.settings.tld} address, a trusted HTTPS certificate and its own PHP version.`);
     const where = h('p', { class: 'where' }, 'New sites are saved in ', h('span', { class: 'mono' }, S.settings.sitesRoot),
@@ -691,7 +692,7 @@ button.log-row:hover { background: var(--hover); }
     if (!S.sites.length) {
       return h('div', {}, head, lede, where, h('div', { class: 'empty' },
         h('p', {}, 'No sites yet. Create a Rhapsody site, or point Rhapsody Server at a project folder you already have.'),
-        h('button', { class: 'btn primary', onclick: () => $('#dlgRhapsody').showModal() }, 'New Rhapsody site')));
+        h('button', { class: 'btn primary', onclick: openRhapsody }, 'New Rhapsody site')));
     }
     const rows = S.sites.map(site => h('tr', {},
       h('td', {}, h('a', { href: site.url, target: '_blank', rel: 'noopener' }, site.domain)),
@@ -1437,6 +1438,30 @@ button.log-row:hover { background: var(--hover); }
     const name = ($('#fRhapsody [name=name]').value || '').trim() || 'my-app';
     $('#whereRh').textContent = `Its code will be saved in ${root.replace(/[\\/]+$/, '')}${sep}${name}`;
   }
+  // Rhapsody needs a minimum PHP (8.4.1). Say so before anything is installed, and only offer versions that can run it.
+  const verOf = b => (S.settings.phpVersions || {})[b];
+  const phpCmp = (a, b) => { const x = a.split('.').map(Number), y = b.split('.').map(Number);
+    for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d; } return 0; };
+  // An installed build is judged by its exact version; one that isn't installed yet by its series (the download is re-checked before use).
+  const canRunRh = b => { const v = verOf(b), min = S.settings.minRhapsodyPhp || '8.4.1';
+    return v && v !== b ? phpCmp(v, min) >= 0 : phpCmp(b, min.split('.').slice(0, 2).join('.')) >= 0; };
+  function fillRhapsodyPhp() {
+    if (!S) return;
+    const sel = $('#rhPhp'), min = S.settings.minRhapsodyPhp || '8.4.1';
+    const prev = sel.value, def = S.settings.defaultPhp;
+    const pick = [prev, def, ...[...S.settings.phpBranches].sort((a, b) => phpCmp(b, a))].find(b => b && canRunRh(b));
+    sel.replaceChildren(...S.settings.phpBranches.map(b => h('option', { value: b, disabled: !canRunRh(b), selected: b === pick },
+      'PHP ' + b + (verOf(b) && verOf(b) !== b ? ' (' + verOf(b) + ')' : '') + (canRunRh(b) ? '' : ' — needs ' + min + '+'))));
+    if (pick) sel.value = pick;
+    const lines = [`Rhapsody needs PHP ${min} or newer. This site will run on the PHP you choose here; your default PHP${def ? ' (' + def + ')' : ''} and your other sites are not changed.`];
+    if (def && !canRunRh(def) && pick) lines.push(`Your default PHP is ${def}, which is too old for Rhapsody, so PHP ${pick} is selected for this site instead.`);
+    if (pick && !verOf(pick)) lines.push(`PHP ${pick} isn't installed yet. It will be downloaded first.`);
+    if (!pick) lines.push('None of the PHP versions available here can run Rhapsody. Install PHP 8.4 or newer from the Versions page first.');
+    $('#rhPhpText').replaceChildren(...lines.map(t => h('p', { style: 'margin:.15rem 0' }, t)));
+    $('#fRhapsody button[value=create]').disabled = !pick;
+  }
+  $('#rhPhp').addEventListener('change', fillRhapsodyPhp);
+  function openRhapsody() { fillRhapsodyPhp(); updateWhere(); $('#dlgRhapsody').showModal(); }
   $('#fRhapsody [name=name]').addEventListener('input', updateWhere);
   $('#fRhapsody').addEventListener('reset', () => setTimeout(updateWhere));
 

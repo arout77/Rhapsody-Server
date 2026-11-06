@@ -257,6 +257,25 @@ CheckS("APP_KEY is 128 hex chars and differs each time; db name sanitised", () =
     Eq(128, keyLine["APP_KEY=".Length..].Trim('"', '\r').Length);   // existing empty "" was replaced by a real key, quotes kept
     True(keyLine.StartsWith("APP_KEY=\""));
 });
+CheckS("Rhapsody PHP minimum: 8.4.1 passes, 8.4.0 and older fail, compared by number not text", () =>
+{
+    Eq("8.4.1", RhapsodyScaffold.MinPhp);
+    True(RhapsodyScaffold.MeetsMinPhp("8.4.1") && RhapsodyScaffold.MeetsMinPhp("8.4.10") && RhapsodyScaffold.MeetsMinPhp("8.5.0") && RhapsodyScaffold.MeetsMinPhp("9.0.0"));
+    True(!RhapsodyScaffold.MeetsMinPhp("8.4.0") && !RhapsodyScaffold.MeetsMinPhp("8.3.30") && !RhapsodyScaffold.MeetsMinPhp("7.4.33"));
+    // an installed build is judged by its exact version, a branch that isn't installed by its series
+    True(RhapsodyScaffold.BranchCanRunRhapsody("8.4", "8.4.2") && !RhapsodyScaffold.BranchCanRunRhapsody("8.4", "8.4.0"));
+    True(RhapsodyScaffold.BranchCanRunRhapsody("8.4") && RhapsodyScaffold.BranchCanRunRhapsody("8.5") && RhapsodyScaffold.BranchCanRunRhapsody("8.5", "8.5"));
+    True(!RhapsodyScaffold.BranchCanRunRhapsody("8.3") && !RhapsodyScaffold.BranchCanRunRhapsody("8.1", "8.1.30") && !RhapsodyScaffold.BranchCanRunRhapsody("7.4"));
+});
+CheckS("PickPhp: keeps a good choice, falls back to the default, then the newest that can run Rhapsody", () =>
+{
+    var all = PhpResolver.SupportedBranches;
+    Eq("8.5", RhapsodyScaffold.PickPhp("8.5", "8.1", all));
+    Eq("8.4", RhapsodyScaffold.PickPhp("8.1", "8.4", all));              // default is fine -> use it
+    Eq("8.5", RhapsodyScaffold.PickPhp("8.1", "8.0", all));              // neither is -> newest
+    Eq("8.5", RhapsodyScaffold.PickPhp("8.4", "8.3", all, b => b == "8.4" ? "8.4.0" : null));   // installed 8.4 is 8.4.0 -> too old
+    Eq<string?>(null, RhapsodyScaffold.PickPhp("8.1", "8.0", new[] { "7.4", "8.1" }));
+});
 CheckS("settings round-trip (enum as string, new fields)", () =>
 {
     var f = Path.Combine(tmpRoot, "settings.json");

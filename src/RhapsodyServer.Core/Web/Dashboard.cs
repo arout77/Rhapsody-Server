@@ -4,7 +4,8 @@ public sealed record ServiceDto(string Id, string Name, string State, int? Port,
 public sealed record SiteDto(string Name, string Domain, string Url, string Root, string PublicDir, string Php, bool Https);
 public sealed record SettingsDto(string Tld, string WebServer, string DefaultPhp, string[] PhpBranches,
     int HttpPort, int HttpsPort, int MariaDbPort, int RedisPort, int SmtpPort, int MailUiPort, string SitesRoot,
-    string DataRoot = "", string LogsDir = "");
+    string DataRoot = "", string LogsDir = "",
+    Dictionary<string, string>? PhpVersions = null, string MinRhapsodyPhp = "");
 public sealed record DashboardState(ServiceDto[] Services, SiteDto[] Sites, SettingsDto Settings, bool HostsWritable, bool Windows, bool CanPickFolder = false,
     bool CanOpenFolder = false);
 /// <param name="UpdateTo">A newer build of this installed series that the vendor offers (apache and nginx only), else null.</param>

@@ -71,7 +71,8 @@ public sealed class StackBackend : IDashboardBackend, IDevContext
 
         var settings = new SettingsDto(st.Tld, st.WebServer.ToString(), st.DefaultPhp, PhpResolver.SupportedBranches,
             st.HttpPort, st.HttpsPort, st.MariaDbPort, st.RedisPort, st.SmtpPort, st.MailUiPort, st.ResolveSitesRoot(),
-            _s.Paths.Root, _s.Paths.Logs);
+            _s.Paths.Root, _s.Paths.Logs,
+            _s.InstalledPhpBranches().ToDictionary(b => b, b => _s.InstalledPkg("php", b).Version), RhapsodyScaffold.MinPhp);
 
         return new DashboardState(services.ToArray(), sites, settings, HostsFile.CanWrite(), OperatingSystem.IsWindows(), CanPickFolder, _opener.CanOpen);
 
