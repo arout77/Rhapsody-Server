@@ -42,7 +42,7 @@ public sealed record AiProviderDto(string Id, string Name, string BaseUrl, strin
 /// <summary>The AI page's state. Keys never leave the app: the page only learns whether one is saved.</summary>
 public sealed record AiConfigDto(bool Enabled, bool Ready, Ai.AiEndpointView Primary, Ai.AiEndpointView? Fallback, AiProviderDto[] Providers);
 /// <param name="Kind"><c>error</c> (Text is the error) or <c>log</c> (LogId names a service log the app reads itself).</param>
-public sealed record ExplainRequest(string Kind, string? Title, string? Text, string? LogId);
+public sealed record ExplainRequest(string Kind, string? Title, string? Text, string? LogId, long? RequestId = null);
 /// <param name="Sent">Exactly what was sent to the provider (after redaction), so the person can see it.</param>
 public sealed record AiAnswerDto(string Answer, string Provider, string Model, bool UsedFallback, string? FallbackNote, string Sent);
 public sealed record AiTestRequest(string? Which);
@@ -86,6 +86,10 @@ public interface IDashboardBackend
     Task SetPhpExtensionsAsync(string branch, string[] enabled, IProgress<string> p, CancellationToken ct);
     Task SetApacheModulesAsync(string[] enabled, IProgress<string> p, CancellationToken ct);
     Profiling.ProfileSnapshot GetProfile();
+    /// <summary>One page of recorded requests (newest first). Hosts without paging return everything.</summary>
+    Profiling.ProfileSnapshot GetProfile(int page, int pageSize) => GetProfile();
+    /// <summary>Deletes one recorded request. False if it is no longer there.</summary>
+    bool DeleteProfileRequest(long id) => false;
     void ClearProfile();
     Task SetProfilingAsync(bool on, IProgress<string> p, CancellationToken ct);
     string ReadLog(string id, int lines);

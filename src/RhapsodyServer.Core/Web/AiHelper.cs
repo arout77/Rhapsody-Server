@@ -68,12 +68,28 @@ public sealed class AiHelper
     public Task<AiTestResult> TestAsync(string which, CancellationToken ct) =>
         _ai.TestAsync(which == AiService.Fallback ? AiService.Fallback : AiService.Primary, ct);
 
+    /// <summary>"Inspect this request": explains where one profiled request spent its time and what to try.</summary>
+    async Task<AiAnswerDto> InspectRequestAsync(ExplainRequest r, CancellationToken ct)
+    {
+        if (_dev == null) throw new NotSupportedException("Inspecting a request isn't available in this host.");
+        if (!_dev.ProfilingEnabled) throw new ArgumentException("The profiler is off, so there is nothing to inspect. Turn it on and load the page again.");
+        var snap = _dev.Profile();
+        var view = snap.Requests.FirstOrDefault(x => x.Request.Id == r.RequestId)
+            ?? throw new ArgumentException("That request is no longer in the profiler's history. Load the page again and inspect the new one.");
+
+        var redactor = new AiRedactor(_knownSecrets().Concat(_ai.SecretLiterals()), Environment.UserName);
+        var prompt = RequestInspector.Build(view, snap.Requests, _describeEnvironment(view.Request.Uri), redactor);
+        var a = await _ai.AskAsync(prompt.System, prompt.User, ct);
+        return new AiAnswerDto(a.Text, a.Provider, a.Model, a.UsedFallback, a.FallbackNote, prompt.User);
+    }
+
     const int MaxErrorChars = 20_000;
     static readonly Regex LogIdRx = new(@"^[a-z0-9.\-]+$", RegexOptions.Compiled);
 
     public async Task<AiAnswerDto> ExplainAsync(ExplainRequest r, CancellationToken ct)
     {
         var kind = (r.Kind ?? "").Trim().ToLowerInvariant();
+        if (kind == "request") return await InspectRequestAsync(r, ct);
         string? logText = null, logName = null, errorText = null;
 
         if (kind == "log")

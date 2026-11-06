@@ -232,7 +232,15 @@ public sealed class DashboardServer : IDisposable
                 }
 
                 case ("GET", "profile"):
-                    await SendAsync(res, 200, _backend.GetProfile());
+                {
+                    var pfPage = int.TryParse(req.QueryString["page"], out var pfPg) ? pfPg : 1;
+                    var pfSize = int.TryParse(req.QueryString["pageSize"], out var pfSz) ? pfSz : 30;
+                    await SendAsync(res, 200, _backend.GetProfile(Math.Max(1, pfPage), Math.Clamp(pfSize, 1, 100)));
+                    return;
+                }
+                case ("DELETE", "profile") when a2 == "requests" && long.TryParse(a3, out var pfId):
+                    if (_backend.DeleteProfileRequest(pfId)) await SendAsync(res, 200, new { ok = true });
+                    else await SendAsync(res, 404, Err("That request is no longer in the profiler."));
                     return;
                 case ("POST", "profile") when a2 == "clear":
                     _backend.ClearProfile();

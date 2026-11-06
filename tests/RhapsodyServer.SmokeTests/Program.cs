@@ -767,6 +767,15 @@ CheckS("access log: nginx and Apache lines parse; the profiler's own requests ar
     True(AccessLogTailer.Parse("1700000000.5\t0.1\t-\tGET\ta.test\t/__rs/beacon\t204\t0\tx", WebServerKind.Nginx) == null);
     True(AccessLogTailer.Parse("garbage", WebServerKind.Nginx) == null && AccessLogTailer.Parse("", WebServerKind.Apache) == null);
 });
+CheckS("access log: static files and dev-server modules are not profiled; pages and API calls are", () =>
+{
+    string L(string uri) => "1700000000.500\t0.010\t0.009\tGET\ta.test\t" + uri + "\t200\t10\tx";
+    foreach (var asset in new[] { "/favicon.ico", "/marketplace/favicon-96x96.png", "/assets/app.js?v=3", "/css/site.CSS", "/fonts/a.woff2", "/site.webmanifest", "/@vite/client", "/node_modules/.vite/deps/react.js" })
+        True(AccessLogTailer.Parse(L(asset), WebServerKind.Nginx) == null, asset);
+    foreach (var page in new[] { "/", "/marketplace/categories", "/api/items.json", "/docs/v1.2/intro", "/search?q=a.png" })
+        True(AccessLogTailer.Parse(L(page), WebServerKind.Nginx) != null, page);
+    True(AccessLogTailer.Parse("1700000000.5\t0.0\t-\t-\t-\t-\t408\t0\t-", WebServerKind.Nginx) == null, "a 408 that never sent a request");
+});
 CheckS("access log: follows appended lines, waits for a half-written line, survives truncation", () =>
 {
     var file = Path.Combine(tmpRoot, "tail", "profile.tsv"); Directory.CreateDirectory(Path.GetDirectoryName(file)!);
@@ -799,6 +808,33 @@ CheckS("store: keeps only the newest entries and matches queries to the request 
     for (var i = 0; i < 10; i++) store.Add(new QueryRecord { StartedAt = t0, Sql = "q" + i });
     Eq(4, store.Snapshot(true, maxQueries: 100).Queries.Length);
     store.Clear(); Eq(0, store.Snapshot(true).Requests.Length);
+});
+CheckS("store: pages come newest first, and deleting a request takes its own SQL with it", () =>
+{
+    var store = new ProfileStore();
+    var t0 = DateTimeOffset.UtcNow;
+    for (var i = 0; i < 7; i++)
+        store.Add(new RequestRecord { StartedAt = t0.AddSeconds(i), DurationMs = 100, Method = "GET", Host = "a.test", Uri = "/" + i, Status = 200 });
+    store.Add(new QueryRecord { StartedAt = t0.AddSeconds(6).AddMilliseconds(40), Sql = "SELECT 'in request 6'", TotalMs = 3 });
+    var p1 = store.SnapshotPage(true, 1, 3);
+    Eq(3, p1.PageCount); Eq(7, p1.StoredRequests); Eq(3, p1.Requests.Length); Eq("/6", p1.Requests[0].Request.Uri);
+    var p3 = store.SnapshotPage(true, 3, 3);
+    Eq(1, p3.Requests.Length); Eq("/0", p3.Requests[0].Request.Uri);
+    Eq(3, store.SnapshotPage(true, 99, 3).Page);                       // past the end: the last page
+    var id = p1.Requests[0].Request.Id;
+    True(store.Remove(id)); True(!store.Remove(id), "already gone");
+    Eq(6, store.SnapshotPage(true, 1, 10).StoredRequests); Eq(0, store.Snapshot(true).Queries.Length);
+});
+CheckS("inspect request: the prompt carries the time split and repeated SQL as shapes, never row values", () =>
+{
+    var t0 = DateTimeOffset.UtcNow;
+    var req = new RequestRecord { StartedAt = t0, DurationMs = 400, Method = "GET", Host = "a.test", Uri = "/products", Status = 200, UpstreamMs = 380 };
+    var qs = Enumerable.Range(1, 5).Select(i => new QueryRecord { StartedAt = t0.AddMilliseconds(i), Sql = $"SELECT * FROM prices WHERE product_id = {i} AND note = 'secret-{i}'", TotalMs = 20 }).ToList();
+    var view = new RequestView(req, qs, qs.Sum(q => q.TotalMs));
+    var p = RequestInspector.Build(view, new[] { view }, "Windows, PHP 8.4", new AiRedactor());
+    True(p.User.Contains("x5") && p.User.Contains("product_id = ?") && !p.User.Contains("secret-3"), p.User);
+    True(p.User.Contains("web server and network: 20 ms") && p.User.Contains("PHP: 380 ms"), p.User);
+    True(p.System.Contains("Inspect this request"));
 });
 CheckS("config: profiling adds the profile log; off leaves logging off", () =>
 {
@@ -979,6 +1015,22 @@ await Check("profile API: token required; enable/disable run as operations; data
     Eq(0, (await Call(Req(HttpMethod.Get, "/api/profile"))).Item2.GetProperty("requests").GetArrayLength());
     Eq(HttpStatusCode.OK, (await Call(Req(HttpMethod.Post, "/api/profile/disable"))).Item1);
     True(!(await Call(Req(HttpMethod.Get, "/api/profile"))).Item2.GetProperty("enabled").GetBoolean());
+});
+await Check("profile API: results come in pages and one request can be deleted", async () =>
+{
+    fake.Store.Clear();
+    for (var i = 0; i < 35; i++)
+        fake.Store.Add(new RequestRecord { StartedAt = DateTimeOffset.UtcNow.AddMinutes(-i), DurationMs = 10, Method = "GET", Host = "iwf.test", Uri = "/p" + i, Status = 200 });
+    var (_, p1) = await Call(Req(HttpMethod.Get, "/api/profile?page=1&pageSize=30"));
+    Eq(30, p1.GetProperty("requests").GetArrayLength()); Eq(2, p1.GetProperty("pageCount").GetInt32()); Eq(35, p1.GetProperty("storedRequests").GetInt32());
+    var (_, p2) = await Call(Req(HttpMethod.Get, "/api/profile?page=2&pageSize=30"));
+    Eq(5, p2.GetProperty("requests").GetArrayLength());
+    var id = p2.GetProperty("requests")[0].GetProperty("request").GetProperty("id").GetInt64();
+    Eq(HttpStatusCode.OK, (await Call(Req(HttpMethod.Delete, "/api/profile/requests/" + id))).Item1);
+    Eq(HttpStatusCode.NotFound, (await Call(Req(HttpMethod.Delete, "/api/profile/requests/" + id))).Item1);
+    Eq(34, (await Call(Req(HttpMethod.Get, "/api/profile"))).Item2.GetProperty("storedRequests").GetInt32());
+    Eq(HttpStatusCode.Unauthorized, (await Call(Req(HttpMethod.Delete, "/api/profile/requests/1", token: false))).Item1);
+    fake.Store.Clear();
 });
 await Check("profile API: a foreign Origin can't read recorded SQL or toggle profiling", async () =>
 {

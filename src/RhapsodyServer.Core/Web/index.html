@@ -186,7 +186,7 @@ label .hint.bad { color: var(--bad); }
 .seg button:not([aria-pressed="true"]):hover:not(:disabled) { color: var(--ink); }
 .seg button:disabled { opacity: .5; cursor: default; }
 .pf-list { display: grid; gap: .3rem; margin-top: 1rem; }
-.rq { display: grid; grid-template-columns: 3.4rem minmax(0, 1fr) 2.6rem 5rem 7.5rem; gap: .7rem; align-items: center; text-align: left; font: inherit; color: inherit; padding: .5rem .8rem; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer; }
+.rq { display: grid; grid-template-columns: 3.4rem 4.9rem minmax(0, 1fr) 2.6rem 5rem 7.5rem; gap: .7rem; align-items: center; text-align: left; font: inherit; color: inherit; padding: .5rem .8rem; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer; }
 .rq:hover { border-color: var(--accent); }
 .rq[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
 .rq .m { font: 600 .75rem var(--mono); color: var(--muted); }
@@ -195,7 +195,12 @@ label .hint.bad { color: var(--bad); }
 .rq .st.bad { color: var(--bad); }
 .rq .ms { font: .8125rem var(--mono); text-align: right; }
 .rq .sub { font: .75rem var(--mono); color: var(--muted); text-align: right; }
-.bar { grid-column: 2 / -1; height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
+.rq-wrap { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .3rem; align-items: stretch; }
+.rq-del { padding: 0 .75rem; font-size: 1rem; line-height: 1; }
+.pager { display: flex; gap: .7rem; align-items: center; justify-content: flex-end; flex-wrap: wrap; margin-top: .8rem; }
+.pf-actions { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+.rq .at { font: .75rem var(--mono); color: var(--muted); }
+.bar { grid-column: 3 / -1; height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
 .bar i { display: block; height: 100%; background: var(--accent); }
 .bar i.warn { background: var(--warn); }
 .bar i.bad { background: var(--bad); }
@@ -579,7 +584,7 @@ button.log-row:hover { background: var(--hover); }
 
   let S = null, V = null, P = null, A = null, created = null, op = null, err = null, conn = false, connectedOnce = false, lastState = '';
   let wasBusy = false, dismissed = false, doneTimer = null, apacheFile = null;
-  let pfTab = 'requests', pfSel = null; const pfOpen = new Set();
+  let pfTab = 'requests', pfSel = null, pfPage = 1; const pfOpen = new Set(); const PF_SIZE = 30;
   const busy = () => !!(op && op.running);
   const route = () => (location.hash.match(/^#\/(\w+)/) || [, 'services'])[1];
 
@@ -636,7 +641,7 @@ button.log-row:hover { background: var(--hover); }
   }
 
   async function loadProfile() {
-    try { P = await api('GET', '/api/profile'); } catch (e) { err = e.message; }
+    try { P = await api('GET', `/api/profile?page=${pfPage}&pageSize=${PF_SIZE}`); pfPage = P.page || 1; } catch (e) { err = e.message; }
     if (route() === 'profiler') render();
   }
 
@@ -1254,6 +1259,10 @@ button.log-row:hover { background: var(--hover); }
   const level = ms => ms >= 500 ? 'bad' : ms >= 100 ? 'warn' : '';
   const bar = (ms, max) => { const i = h('i', { class: level(ms) }); i.style.width = Math.max(2, Math.min(100, ms / max * 100)) + '%'; return h('div', { class: 'bar' }, i); };
 
+  // When a request started, in this computer's time: the clock in the list, the full date on hover and in the detail.
+  const fmtClock = iso => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+  const fmtWhen = iso => new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'medium' });
+
   function queryItem(q) {
     const d = h('details', { class: 'q' },
       h('summary', {},
@@ -1272,19 +1281,52 @@ button.log-row:hover { background: var(--hover); }
     const r = v.request;
     const row = h('button', { class: 'rq', 'aria-pressed': String(pfSel === r.id), onclick: () => { pfSel = pfSel === r.id ? null : r.id; render(); } },
       h('span', { class: 'm' }, r.method),
+      h('span', { class: 'at', title: fmtWhen(r.startedAt) }, fmtClock(r.startedAt)),
       h('span', { class: 'u', title: r.host + r.uri }, r.host + r.uri),
       h('span', { class: 'st' + (r.status >= 400 ? ' bad' : '') }, String(r.status)),
       h('span', { class: 'ms' }, fmtMs(r.durationMs)),
       h('span', { class: 'sub' }, v.queries.length ? `${v.queries.length} SQL · ${fmtMs(v.sqlMs)}` : 'no SQL'),
       bar(r.durationMs, max));
-    return row;
+    return h('div', { class: 'rq-wrap' }, row,
+      h('button', { class: 'btn quiet rq-del', type: 'button', title: 'Delete this request', 'aria-label': 'Delete ' + r.method + ' ' + r.host + r.uri,
+        onclick: () => deleteRequest(r.id) }, '✕'));
+  }
+
+  async function deleteRequest(id) {
+    err = null;
+    try { await api('DELETE', `/api/profile/requests/${id}`); }
+    catch (e) {
+      if (e.status === 401) { S = null; renderLocked(); return; }
+      if (e.status !== 404) err = e.message;      // 404: it already scrolled out, which is what the person wanted anyway
+    }
+    if (pfSel === id) pfSel = null;
+    await loadProfile();
+  }
+
+  async function deleteAllRequests() {
+    if (!await confirmBox('Delete everything the profiler recorded?', 'This removes every recorded request and SQL query. Recording carries on with the next request.', 'Delete all')) return;
+    pfSel = null; pfPage = 1;
+    await act(() => api('POST', '/api/profile/clear'));
+  }
+
+  const inspectRequest = (r) => explain({ kind: 'request', requestId: r.id }, 'Inspecting ' + r.method + ' ' + r.host + r.uri);
+
+  function pager() {
+    if (!P || !P.pageCount || P.pageCount <= 1) return null;
+    const from = (P.page - 1) * P.pageSize + 1, to = from + P.requests.length - 1;
+    const go = n => { pfPage = n; pfSel = null; loadProfile(); };
+    return h('div', { class: 'pager' },
+      h('span', { class: 'muted small' }, `Page ${P.page} of ${P.pageCount} · ${from}–${to} of ${P.storedRequests}`),
+      h('button', { class: 'btn sm', type: 'button', disabled: P.page <= 1, onclick: () => go(1) }, 'Newest'),
+      h('button', { class: 'btn sm', type: 'button', disabled: P.page <= 1, onclick: () => go(P.page - 1) }, 'Newer'),
+      h('button', { class: 'btn sm', type: 'button', disabled: P.page >= P.pageCount, onclick: () => go(P.page + 1) }, 'Older'));
   }
 
   function viewProfiler() {
     const on = !!(P && P.enabled);
     const head = h('div', { class: 'page-head' }, h('h1', {}, 'Profiler'),
       h('div', { class: 'actions' },
-        on ? h('button', { class: 'btn', onclick: () => act(() => api('POST', '/api/profile/clear')) }, 'Clear') : null,
+        on ? h('button', { class: 'btn', disabled: !(P && (P.storedRequests || P.queries.length)), onclick: deleteAllRequests }, 'Delete all') : null,
         h('button', { class: 'switch', role: 'switch', 'aria-checked': String(on), 'aria-label': 'Profiling', disabled: busy(),
           onclick: () => act(() => api('POST', `/api/profile/${on ? 'disable' : 'enable'}`)) })));
     if (!P) return h('div', {}, head, h('p', { class: 'lede muted' }, 'Loading…'));
@@ -1298,7 +1340,7 @@ button.log-row:hover { background: var(--hover); }
     const tabs = h('div', { class: 'seg', role: 'group', 'aria-label': 'View' },
       h('button', { 'aria-pressed': String(pfTab === 'requests'), onclick: () => { pfTab = 'requests'; render(); } }, 'Requests'),
       h('button', { 'aria-pressed': String(pfTab === 'queries'), onclick: () => { pfTab = 'queries'; render(); } }, 'Queries'));
-    const lede = h('p', { class: 'lede muted' }, 'Queries are matched to requests by time, so requests that overlap can share queries. Only the newest are kept.');
+    const lede = h('p', { class: 'lede muted' }, 'Pages and API calls only: images, scripts, styles and fonts are skipped. Queries are matched to requests by time, so requests that overlap can share queries. Only the newest are kept.');
     let body;
     if (pfTab === 'requests') {
       if (!P.requests.length) body = h('div', { class: 'empty' }, h('p', {}, 'No requests yet. Open one of your sites and they will appear here.'));
@@ -1306,10 +1348,15 @@ button.log-row:hover { background: var(--hover); }
         const max = Math.max(...P.requests.map(v => v.request.durationMs), 1);
         const list = h('div', { class: 'pf-list' }, P.requests.map(v => requestRow(v, max)));
         const sel = P.requests.find(v => v.request.id === pfSel);
-        body = h('div', {}, list, sel ? h('div', { class: 'pf-detail' },
+        body = h('div', {}, list, pager(), sel ? h('div', { class: 'pf-detail' },
           h('h2', {}, `${sel.request.method} ${sel.request.host}${sel.request.uri}`),
+          h('div', { class: 'pf-actions' },
+            aiReady()
+              ? h('button', { class: 'btn sm', type: 'button', onclick: () => inspectRequest(sel.request) }, icon('sparkles'), 'Inspect this request')
+              : h('a', { class: 'btn sm', href: '#/ai' }, icon('sparkles'), 'Set up AI help to inspect requests'),
+            h('button', { class: 'btn sm danger', type: 'button', onclick: () => deleteRequest(sel.request.id) }, 'Delete')),
           h('div', { class: 'muted small' },
-            `${sel.request.status} · ${fmtMs(sel.request.durationMs)} total` +
+            `${fmtWhen(sel.request.startedAt)} · ${sel.request.status} · ${fmtMs(sel.request.durationMs)} total` +
             (sel.request.upstreamMs != null ? ` · ${fmtMs(sel.request.upstreamMs)} in PHP` : '') +
             ` · ${sel.queries.length} quer${sel.queries.length === 1 ? 'y' : 'ies'}, ${fmtMs(sel.sqlMs)} in SQL`),
           sel.queries.length ? sel.queries.map(queryItem) : h('p', { class: 'muted small' }, 'No SQL ran during this request.')) : null);
@@ -1629,7 +1676,7 @@ button.log-row:hover { background: var(--hover); }
     let t;
     es.addEventListener('changed', () => { clearTimeout(t); t = setTimeout(refresh, 80); });
     let tp;
-    es.addEventListener('profile', () => { if (route() === 'profiler') { clearTimeout(tp); tp = setTimeout(loadProfile, 100); } });
+    es.addEventListener('profile', () => { if (route() === 'profiler' && pfPage === 1) { clearTimeout(tp); tp = setTimeout(loadProfile, 100); } });
     es.addEventListener('ai', ev => {   // a lookup the assistant just started; only this page's own question counts
       let d; try { d = JSON.parse(ev.data); } catch { return; }
       if (askBusy && d.id === askId && typeof d.text === 'string') { askLive.push(d.text); paintAskLive(); }

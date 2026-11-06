@@ -108,6 +108,8 @@ public sealed class AccessLogTailer : IDisposable
 
         var uri = f[o + 2];
         if (uri.StartsWith("/__rs/", StringComparison.Ordinal)) return null;   // the profiler's own traffic
+        if (uri.Length == 0 || uri == "-" || f[o] == "-") return null;         // a connection that never sent a request (nginx logs it as a 408)
+        if (IsAsset(uri)) return null;                                          // images, scripts, styles, fonts...: only pages are profiled
         if (!int.TryParse(f[o + 3], NumberStyles.Integer, inv, out var status)) status = 0;
         long.TryParse(f[o + 4], NumberStyles.Integer, inv, out var bytes);
 
@@ -123,6 +125,27 @@ public sealed class AccessLogTailer : IDisposable
             RequestId = nginx && f.Length > o + 5 ? f[o + 5] : "",
             UpstreamMs = upstream,
         };
+    }
+
+    static readonly HashSet<string> AssetExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "css", "scss", "sass", "less", "js", "mjs", "cjs", "jsx", "ts", "tsx", "vue", "map", "wasm",
+        "png", "jpg", "jpeg", "gif", "webp", "avif", "apng", "bmp", "svg", "ico", "cur",
+        "woff", "woff2", "ttf", "otf", "eot",
+        "webmanifest", "mp3", "m4a", "ogg", "wav", "mp4", "webm",
+    };
+
+    static readonly string[] AssetPrefixes = { "/@vite", "/@id/", "/@fs/", "/@react-refresh", "/__vite", "/node_modules/" };
+
+    /// <summary>True for a request that fetches a static file (or a Vite dev-server module) and not a page or an API call.</summary>
+    public static bool IsAsset(string uri)
+    {
+        var end = uri.IndexOfAny(new[] { '?', '#' });
+        var path = end >= 0 ? uri[..end] : uri;
+        foreach (var p in AssetPrefixes)
+            if (path.StartsWith(p, StringComparison.Ordinal)) return true;
+        var dot = path.LastIndexOf('.');
+        return dot > path.LastIndexOf('/') && AssetExtensions.Contains(path[(dot + 1)..]);
     }
 
     public void Dispose()

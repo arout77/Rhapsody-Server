@@ -29,6 +29,8 @@ public sealed class StackBackend : IDashboardBackend, IDevContext
 
     public Profiling.ProfileSnapshot GetProfile() => _s.Profile.Snapshot(_s.Settings.ProfilingEnabled);
     public void ClearProfile() => _s.Profile.Clear();
+    public Profiling.ProfileSnapshot GetProfile(int page, int pageSize) => _s.Profile.SnapshotPage(_s.Settings.ProfilingEnabled, page, pageSize);
+    public bool DeleteProfileRequest(long id) => _s.Profile.Remove(id);
     public Task SetProfilingAsync(bool on, IProgress<string> p, CancellationToken ct) => _s.SetProfilingAsync(on, p, ct);
 
     static string StateName(ServiceState s) => s.ToString().ToLowerInvariant();

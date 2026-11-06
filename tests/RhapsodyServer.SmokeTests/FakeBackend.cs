@@ -131,6 +131,8 @@ sealed class FakeBackend : IDashboardBackend
     public void RaiseProfileChanged() => ProfileChanged?.Invoke();
     public RhapsodyServer.Core.Profiling.ProfileSnapshot GetProfile() => Store.Snapshot(Profiling);
     public void ClearProfile() { Store.Clear(); ProfileChanged?.Invoke(); }
+    public RhapsodyServer.Core.Profiling.ProfileSnapshot GetProfile(int page, int pageSize) => Store.SnapshotPage(Profiling, page, pageSize);
+    public bool DeleteProfileRequest(long id) => Store.Remove(id);
     public async Task SetProfilingAsync(bool on, IProgress<string> p, CancellationToken ct)
     {
         await Step(p, on ? "Restarting services with profiling on" : "Restarting services with profiling off");
