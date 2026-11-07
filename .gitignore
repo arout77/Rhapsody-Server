@@ -5,3 +5,7 @@ dist/
 .vs/
 installer-out/
 apache-fallback/
+
+# built installer: publish it as a GitHub release asset / on the website, never commit it
+RhapsodyServer-Setup.exe
+*.exe.sha256

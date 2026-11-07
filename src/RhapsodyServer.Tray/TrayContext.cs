@@ -25,8 +25,8 @@ sealed class TrayContext : ApplicationContext
     {
         _backend = new StackBackend(_stack, new WinFormsFolderPicker());
         _ = _ui.Handle;                    // force handle creation on the UI thread
-        _progress = new Progress<string>(msg => _ui.BeginInvoke(() => _icon.Text = Trunc(msg)));
         _icon = new NotifyIcon { Icon = AppIcon(), Text = "Rhapsody Server", Visible = true, ContextMenuStrip = _menu };
+        _progress = new Progress<string>(msg => _ui.BeginInvoke(() => _icon.Text = Trunc(msg)));
         _menu.Opening += (_, _) => Rebuild();
         _icon.MouseDoubleClick += (_, e) => { if (e.Button == MouseButtons.Left) OpenDashboard(); };
 
@@ -55,11 +55,12 @@ sealed class TrayContext : ApplicationContext
         }) { IsBackground = true, Name = "open-dashboard-signal" }.Start();
     }
 
-    void StartDashboard()
+    DashboardServer StartDashboard()
     {
-        if (_dash != null) return;
+        if (_dash != null) return _dash;
         _dash = new DashboardServer(_backend, _stack.Settings.UiToken);
         _dash.Start(_stack.Settings.UiPort);
+        return _dash;
     }
 
     /// <summary>The icon built into RhapsodyServer.exe (see ApplicationIcon in the project file).</summary>
@@ -136,8 +137,8 @@ sealed class TrayContext : ApplicationContext
     {
         try
         {
-            StartDashboard();
-            Shell(page == null ? _dash.OpenUrl : _dash.OpenUrl + "&go=" + page);   // the page reads &go= once, with the token
+            var dash = StartDashboard();
+            Shell(page == null ? dash.OpenUrl : dash.OpenUrl + "&go=" + page);   // the page reads &go= once, with the token
         }
         catch (Exception ex) { Balloon("Couldn't start the dashboard: " + ex.Message, ToolTipIcon.Error); }
     }
