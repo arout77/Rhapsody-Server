@@ -7,15 +7,17 @@ namespace RhapsodyServer.Core.Profiling;
 /// Follows the web server's profile log and turns each line into a <see cref="RequestRecord"/>.
 /// The log is tab-separated (URLs can't contain a raw tab, so no JSON-escaping trouble):
 ///   nginx : end-time(s) \t request-time(s) \t upstream-time \t method \t host \t uri \t status \t bytes \t request-id
-///   apache: end-time(ms) \t duration(us) \t method \t host \t uri \t status \t bytes \t -
+///   apache: end-time(ms) \t duration(us) \t method \t host \t uri \t status \t bytes \t request-id
+/// The request id is the X-RS-Request-Id response header the PHP collector sets ("-" when PHP didn't run), which is
+/// what ties this line to PHP's own record of the request and to the browser's timings.
 /// </summary>
 public sealed class AccessLogTailer : IDisposable
 {
     public static string LogFormatNginx =>
-        "log_format rs_profile '$msec\\t$request_time\\t$upstream_response_time\\t$request_method\\t$host\\t$request_uri\\t$status\\t$body_bytes_sent\\t$request_id';";
+        "log_format rs_profile '$msec\\t$request_time\\t$upstream_response_time\\t$request_method\\t$host\\t$request_uri\\t$status\\t$body_bytes_sent\\t$sent_http_x_rs_request_id';";
 
     public const string LogFormatApache =
-        "LogFormat \"%{end:msec}t\\t%D\\t%m\\t%{Host}i\\t%U%q\\t%>s\\t%B\\t-\" rs_profile";
+        "LogFormat \"%{end:msec}t\\t%D\\t%m\\t%{Host}i\\t%U%q\\t%>s\\t%B\\t%{X-RS-Request-Id}o\" rs_profile";
 
     readonly string _path;
     readonly WebServerKind _kind;
@@ -122,7 +124,7 @@ public sealed class AccessLogTailer : IDisposable
             Uri = uri,
             Status = status,
             Bytes = bytes,
-            RequestId = nginx && f.Length > o + 5 ? f[o + 5] : "",
+            RequestId = f.Length > o + 5 && f[o + 5] != "-" ? f[o + 5].Trim() : "",
             UpstreamMs = upstream,
         };
     }

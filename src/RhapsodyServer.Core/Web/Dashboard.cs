@@ -24,6 +24,24 @@ public sealed record PhpModulesDto(string[] Branches, string? Branch, ModuleDto[
 public sealed record ApacheModulesDto(bool Installed, string? Version, bool Serving, bool Running, ModuleDto[] Modules);
 public sealed record ModulesRequest(string[] Enabled);
 public sealed record PickFolderRequest(string? Initial);
+
+/// <summary>One installed PHP and whether Xdebug's profiler can be switched on for it.</summary>
+/// <param name="Supported">Xdebug 3 needs PHP 7.4 or newer.</param>
+/// <param name="Installed">Xdebug's DLL is already in that PHP's ext folder.</param>
+public sealed record XdebugBranchDto(string Branch, bool Supported, bool Installed, bool Enabled, bool InUse);
+/// <param name="XdebugCookie">The cookie that makes Xdebug profile one request, for people who want to trigger it from their own browser.</param>
+/// <param name="BrowserProbe">The Web Vitals option is on; <paramref name="BrowserProbeRunning"/> says it is actually being served right now.</param>
+/// <param name="LighthouseMissing">Why the Lighthouse button is unavailable (Node or a browser is missing), or null when it is ready.</param>
+public sealed record ProfilerToolsDto(XdebugBranchDto[] Xdebug, string XdebugCookie, bool BrowserProbe, bool BrowserProbeRunning,
+    bool LighthouseReady, string? LighthouseMissing, string? LighthouseBrowser, string[] Sites, TemplateHintsDto? TemplateHints = null);
+/// <param name="Available">Profiling and the browser probe are both running, so the overlay can load.</param>
+public sealed record TemplateHintsDto(bool Available, bool Blocks, TemplateHintSiteDto[] Sites);
+public sealed record TemplateHintSiteDto(string Name, string Domain, bool On);
+/// <summary>Set a site's switch (Site and On together) and/or the blocks option (Blocks).</summary>
+public sealed record TemplateHintsRequest(string? Site, bool? On, bool? Blocks);
+public sealed record XdebugToggleRequest(string Branch, bool On);
+public sealed record BrowserProbeRequest(bool On);
+public sealed record LighthouseRequest(string Site);
 public sealed record VersionRequest(string Id, string Series);
 
 /// <param name="Target"><c>sites</c> (where new sites are created), <c>site</c> (one site's folder, by Name), <c>data</c> (the app's own files) or <c>logs</c>.</param>
@@ -87,6 +105,18 @@ public interface IDashboardBackend
     Task SetPhpExtensionsAsync(string branch, string[] enabled, IProgress<string> p, CancellationToken ct);
     Task SetApacheModulesAsync(string[] enabled, IProgress<string> p, CancellationToken ct);
     Profiling.ProfileSnapshot GetProfile();
+
+    // ---- profiler tools (phase 2). Defaults keep hosts that don't have them (tests, the UI demo) working.
+    ProfilerToolsDto GetProfilerTools() => new(Array.Empty<XdebugBranchDto>(), "", true, false, false, "Not available here.", null, Array.Empty<string>());
+    /// <summary>Switches Xdebug's profile-on-trigger mode on or off for one PHP version (downloads its DLL the first time).</summary>
+    Task SetXdebugAsync(string branch, bool on, IProgress<string> p, CancellationToken ct) => throw new NotSupportedException("Xdebug isn't available here.");
+    /// <summary>Turns the browser probe (Web Vitals) on or off; restarts the web server if profiling is running.</summary>
+    Task SetBrowserProbeAsync(bool on, IProgress<string> p, CancellationToken ct) => throw new NotSupportedException("The browser probe isn't available here.");
+    /// <summary>Loads a recorded GET request again with Xdebug's profiler triggered, and summarises the result.</summary>
+    Task<Profiling.XdebugSummary> ProfileRequestWithXdebugAsync(long requestId, CancellationToken ct) => throw new NotSupportedException("Xdebug isn't available here.");
+    /// <summary>Runs Lighthouse against one of the person's sites.</summary>
+    Task<Profiling.LighthouseResult> RunLighthouseAsync(string site, CancellationToken ct) => throw new NotSupportedException("Lighthouse isn't available here.");
+    void SetTemplateHints(TemplateHintsRequest r) => throw new NotSupportedException("Template hints aren't available here.");
     /// <summary>One page of recorded requests (newest first). Hosts without paging return everything.</summary>
     Profiling.ProfileSnapshot GetProfile(int page, int pageSize) => GetProfile();
     /// <summary>Deletes one recorded request. False if it is no longer there.</summary>

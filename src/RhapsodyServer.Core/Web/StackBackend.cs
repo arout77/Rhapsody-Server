@@ -147,6 +147,8 @@ public sealed class StackBackend : IDashboardBackend, IDevContext
                 break;
             case "data": path = _s.Paths.Root; break;
             case "logs": path = _s.Paths.Logs; break;
+            case "lighthouse": path = Path.Combine(_s.Paths.Data, "lighthouse"); Directory.CreateDirectory(path); break;
+            case "xdebug": path = _s.XdebugDir; Directory.CreateDirectory(path); break;
             case "site":
                 var site = _s.Settings.Sites.FirstOrDefault(x => x.Name.Equals(req.Name ?? "", StringComparison.OrdinalIgnoreCase))
                     ?? throw new ArgumentException($"There is no site called \"{req.Name}\".");
@@ -395,6 +397,98 @@ public sealed class StackBackend : IDashboardBackend, IDevContext
     public Task<AiAnswerDto> ExplainAsync(ExplainRequest req, CancellationToken ct) => _ai.ExplainAsync(req, ct);
     public Task<AiAskDto> AskAiAsync(AiAskRequest req, IProgress<string>? progress, CancellationToken ct) => _ai.AskAsync(req, progress, ct);
     public void CancelAi() => _ai.Cancel();
+
+    // ------------------------------------------------------------ profiler tools: Xdebug, browser probe, Lighthouse
+    public ProfilerToolsDto GetProfilerTools()
+    {
+        var st = _s.Settings;
+        var inUse = _s.BranchesInUse.ToHashSet();
+        var branches = _s.InstalledPhpBranches().OrderByDescending(b => b, VersionUtil.Comparer)
+            .Select(b => new XdebugBranchDto(b, Profiling.XdebugResolver.Supports(b), _s.XdebugInstalled(b), _s.XdebugOn(b), inUse.Contains(b))).ToArray();
+        var lh = Profiling.LighthouseRunner.Status();
+        return new ProfilerToolsDto(branches, string.IsNullOrEmpty(st.XdebugTrigger) ? "" : "XDEBUG_TRIGGER=" + st.XdebugTrigger,
+            st.ProfilingBrowserProbe, _s.BrowserProbeActive, lh.Ready, lh.Missing, lh.Browser, st.Sites.Select(x => _s.Domain(x.Name)).ToArray(),
+            new TemplateHintsDto(st.ProfilingEnabled && _s.BrowserProbeActive, st.TemplateHintBlocks,
+                st.Sites.Select(x => new TemplateHintSiteDto(x.Name, _s.Domain(x.Name), _s.TemplateHintsOn(x.Name))).ToArray()));
+    }
+
+    public void SetTemplateHints(TemplateHintsRequest r)
+    {
+        if (r.Blocks is { } blocks) _s.SetTemplateHintBlocks(blocks);
+        if (r.Site != null)
+        {
+            if (r.On == null) throw new ArgumentException("Say whether template hints should be on or off.");
+            _s.SetTemplateHints(r.Site, r.On.Value);
+        }
+    }
+
+    public Task SetXdebugAsync(string branch, bool on, IProgress<string> p, CancellationToken ct) => _s.SetXdebugAsync(branch, on, p, ct);
+    public Task SetBrowserProbeAsync(bool on, IProgress<string> p, CancellationToken ct) => _s.SetBrowserProbeAsync(on, p, ct);
+
+    public async Task<Profiling.XdebugSummary> ProfileRequestWithXdebugAsync(long requestId, CancellationToken ct)
+    {
+        var st = _s.Settings;
+        var rec = _s.Profile.FindRequest(requestId) ?? throw new ArgumentException("That request is no longer in the profiler.");
+        if (!string.Equals(rec.Method, "GET", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Only GET requests can be repeated for profiling: repeating a " + rec.Method + " could change your data. " +
+                "To profile it, send the request yourself with the cookie shown under Tools.");
+        var host = rec.Host.Split(':')[0];
+        var site = st.Sites.FirstOrDefault(x => _s.Domain(x.Name).Equals(host, StringComparison.OrdinalIgnoreCase))
+            ?? throw new ArgumentException("That request wasn't served by one of your sites, so there is no PHP to profile.");
+        if (!st.ProfilingEnabled) throw new ArgumentException("Turn profiling on first.");
+        if (!_s.XdebugOn(site.Php)) throw new ArgumentException($"Xdebug's profiler isn't on for PHP {site.Php}. Turn it on under Tools.");
+        if (_s.Supervisor.Get(_s.WebServerId)?.State != ServiceState.Running) throw new ArgumentException("The web server isn't running.");
+
+        var scheme = site.Https ? "https" : "http";
+        var port = site.Https ? st.HttpsPort : st.HttpPort;
+        var handler = new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false, ConnectTimeout = TimeSpan.FromSeconds(5) };
+        handler.SslOptions.TargetHost = host;
+        using var http = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(3) };
+        using var rq = new HttpRequestMessage(HttpMethod.Get, $"{scheme}://127.0.0.1:{port}{rec.Uri}");
+        rq.Headers.Host = host;
+        rq.Headers.UserAgent.ParseAdd("RhapsodyServer-Profiler/1.0");
+        rq.Headers.TryAddWithoutValidation("Cookie", "XDEBUG_TRIGGER=" + st.XdebugTrigger);
+        string? id;
+        try
+        {
+            using var rs = await http.SendAsync(rq, HttpCompletionOption.ResponseHeadersRead, ct);
+            id = rs.Headers.TryGetValues(Profiling.PhpCollectorScript.RequestIdHeader, out var hv) ? hv.FirstOrDefault() : null;
+            await rs.Content.CopyToAsync(Stream.Null, ct);   // let PHP finish: the profile file is closed at the end of the request
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            if (ct.IsCancellationRequested) throw;
+            throw new InvalidOperationException("Loading the page again failed: " + ex.Message);
+        }
+        if (string.IsNullOrEmpty(id)) throw new InvalidOperationException("PHP didn't answer with a request id (was the page served by PHP? restart PHP after turning profiling on).");
+
+        Profiling.PhpRecord? php = null;
+        for (var i = 0; i < 24 && php == null; i++)
+        {
+            _s.PollProfileLogs();
+            php = _s.Profile.FindPhp(id);
+            if (php == null) await Task.Delay(250, ct);
+        }
+        var file = php?.ProfileFile;
+        if (php == null) throw new InvalidOperationException("The profiler didn't see that request in time. Try again.");
+        if (string.IsNullOrEmpty(file) || !File.Exists(file))
+            throw new InvalidOperationException("Xdebug didn't write a profile. Turn Xdebug off and on again under Tools so PHP restarts with the current settings.");
+        if (!Path.GetFullPath(file).StartsWith(Path.GetFullPath(_s.XdebugDir), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("That profile file isn't in Rhapsody Server's profile folder, so it wasn't read.");
+        return await Task.Run(() => Profiling.CachegrindParser.Parse(file), ct);
+    }
+
+    public async Task<Profiling.LighthouseResult> RunLighthouseAsync(string site, CancellationToken ct)
+    {
+        var st = _s.Settings;
+        var s = st.Sites.FirstOrDefault(x => x.Name.Equals(site ?? "", StringComparison.OrdinalIgnoreCase) || _s.Domain(x.Name).Equals(site ?? "", StringComparison.OrdinalIgnoreCase))
+            ?? throw new ArgumentException("Pick one of your sites.");
+        if (_s.Supervisor.Get(_s.WebServerId)?.State != ServiceState.Running) throw new ArgumentException("Start the web server first.");
+        var url = $"{(s.Https ? "https" : "http")}://{_s.Domain(s.Name)}/";
+        try { return await Profiling.LighthouseRunner.RunAsync(url, Path.Combine(_s.Paths.Data, "lighthouse"), ct); }
+        catch (Exception ex) when ((ex is InvalidOperationException && (ex.Message.Contains("isn't installed") || ex.Message.Contains("was found"))))
+        { throw new ArgumentException(ex.Message); }
+    }
 
     // ------------------------------------------------------- what the Ask assistant can see (IDevContext)
     // ReadLog and CheckSiteAsync above already have the right shape and serve both the dashboard and the assistant.

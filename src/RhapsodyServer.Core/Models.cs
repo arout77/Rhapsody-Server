@@ -58,6 +58,19 @@ public sealed class Settings
     public bool ProfilingEnabled { get; set; }
     public int MariaDbInternalPort { get; set; } = 3316;
 
+    /// <summary>While profiling: add the small browser probe (Web Vitals) to HTML pages. On by default; it only runs while profiling is on.</summary>
+    public bool ProfilingBrowserProbe { get; set; } = true;
+    /// <summary>Local port of the tiny server that serves the probe script and receives its measurements (reached through each site's own address).</summary>
+    public int ProbePort { get; set; } = 7767;
+    /// <summary>PHP branches that have Xdebug's profiler switched on.</summary>
+    public List<string> XdebugBranches { get; set; } = new();
+    /// <summary>The secret that makes Xdebug profile a request (cookie XDEBUG_TRIGGER). Made once; only this app and your php.ini know it.</summary>
+    public string XdebugTrigger { get; set; } = "";
+    /// <summary>Names of sites that have template hints on (a border and file label around every template on the page).</summary>
+    public List<string> TemplateHintSites { get; set; } = new();
+    /// <summary>Template hints also mark blocks, not only whole templates.</summary>
+    public bool TemplateHintBlocks { get; set; }
+
     /// <summary>The optional AI helper ("Explain this error"). Off until the person turns it on.</summary>
     public Ai.AiSettings Ai { get; set; } = new();
 

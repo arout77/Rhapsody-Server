@@ -874,11 +874,11 @@ CheckS("config: profiling adds the profile log; off leaves logging off", () =>
     True(off.Contains("access_log off;") && !off.Contains("rs_profile"));
     var on = ConfigWriter.Nginx(st, new[] { site }, @"C:\nginx", @"C:\etc\nginx", @"C:\etc\nginx\fastcgi_params", true);
     True(on.Contains("log_format rs_profile") && on.Contains("access_log \"C:/etc/nginx/logs/profile.tsv\" rs_profile;") && !on.Contains("access_log off;"));
-    True(on.Contains("$request_time") && on.Contains("$upstream_response_time") && on.Contains("$request_id"));
+    True(on.Contains("$request_time") && on.Contains("$upstream_response_time") && on.Contains("$sent_http_x_rs_request_id"));
     var apOff = ConfigWriter.Apache(st, new[] { site }, @"C:\apache", @"C:\etc\apache");
     True(!apOff.Contains("CustomLog"));
     var apOn = ConfigWriter.Apache(st, new[] { site }, @"C:\apache", @"C:\etc\apache", true);
-    True(apOn.Contains("LogFormat \"%{end:msec}t") && apOn.Contains("CustomLog \"C:/etc/apache/logs/profile.tsv\" rs_profile"));
+    True(apOn.Contains("LogFormat \"%{end:msec}t") && apOn.Contains("CustomLog \"C:/etc/apache/logs/profile.tsv\" rs_profile") && apOn.Contains("%{X-RS-Request-Id}o"));
 });
 CheckS("stack: with profiling on MariaDB moves to the internal port and the proxy owns the public one", () =>
 {
@@ -892,6 +892,215 @@ CheckS("stack: with profiling on MariaDB moves to the internal port and the prox
     True(stack.SpecFor("mariadb").Stop!.Args.Contains("--port=3316"), "shutdown goes straight to MariaDB, not through the proxy");
     Eq(3306, stack.Settings.MariaDbPort);                               // apps keep using the port they always did
     True(new Settings().ProfilingEnabled == false, "off by default");
+});
+
+
+// ---------------------------------------------------------------- profiler phase 2
+Console.WriteLine("Profiler phase 2");
+CheckS("php log: parses a collector line; refuses wrong versions and broken numbers", () =>
+{
+    var r = PhpLogTailer.Parse("v1\t0123456789abcdef\t4242\t1700000000123\t55.25\t2097152\t31\t200\tGET\tshop.test\t/cart?x=1\t");
+    True(r != null); Eq("0123456789abcdef", r!.RequestId); Eq(4242, r.Pid); Eq(55.25, r.DurationMs);
+    Eq(2097152L, r.PeakMemoryBytes); Eq(31, r.Includes); Eq(200, r.Status); Eq("shop.test", r.Host); Eq("/cart?x=1", r.Uri);
+    True(r.ProfileFile == null, "no xdebug file");
+    Eq(1700000000123L, r.StartedAt.ToUnixTimeMilliseconds());
+    var x = PhpLogTailer.Parse("v1\tabcdef0123456789\t1\t1700000000000\t1\t1\t1\t200\tGET\ta.test\t/\tC:\\x\\cachegrind.out.1");
+    Eq("C:\\x\\cachegrind.out.1", x!.ProfileFile);
+    True(PhpLogTailer.Parse("v2\ta\t1\t1\t1\t1\t1\t200\tGET\ta\t/") == null, "unknown version");
+    True(PhpLogTailer.Parse("v1\ta\t1\tnope\t1\t1\t1\t200\tGET\ta\t/") == null, "bad start");
+    True(PhpLogTailer.Parse("v1\ta\t1\t1\t-5\t1\t1\t200\tGET\ta\t/") == null, "negative duration");
+    True(PhpLogTailer.Parse("v1\ta\t1") == null, "too short");
+});
+CheckS("access log: reads the request id the PHP collector set, for nginx and Apache; '-' means none", () =>
+{
+    var ng = AccessLogTailer.Parse("1700000001.000\t0.100\t0.090\tGET\ta.test\t/one\t200\t10\t0123456789abcdef", WebServerKind.Nginx)!;
+    Eq("0123456789abcdef", ng.RequestId);
+    var none = AccessLogTailer.Parse("1700000001.000\t0.100\t0.090\tGET\ta.test\t/one\t200\t10\t-", WebServerKind.Nginx)!;
+    Eq("", none.RequestId);
+});
+CheckS("collector script: sets the id header, Server-Timing, the log line and the beacon key; the probe is optional", () =>
+{
+    var on = PhpCollectorScript.Generate(@"C:\etc\profiler\php-profile.tsv", "k3y", true);
+    True(on.Contains("X-RS-Request-Id") && on.Contains("Server-Timing") && on.Contains("header_register_callback"));
+    True(on.Contains("C:/etc/profiler/php-profile.tsv") || on.Contains(@"C:\etc\profiler\php-profile.tsv"), "log path");
+    True(on.Contains("k3y") && on.Contains("/__rs/probe.js") && on.Contains("ob_start"));
+    var off = PhpCollectorScript.Generate(@"C:\x.tsv", "k3y", false);
+    True(on.Contains("$probe = true") && off.Contains("$probe = false"), "injection is switched by the setting");
+    Eq(24, PhpCollectorScript.NewBeaconKey().Length);
+});
+CheckS("store: with a PHP record, SQL is matched by worker pid, not by overlapping time", () =>
+{
+    var store = new ProfileStore();
+    var t0 = DateTimeOffset.UtcNow;
+    store.Add(new RequestRecord { StartedAt = t0, DurationMs = 200, Method = "GET", Host = "a.test", Uri = "/a", Status = 200, RequestId = "aaaaaaaaaaaaaaaa" });
+    store.Add(new RequestRecord { StartedAt = t0.AddMilliseconds(10), DurationMs = 200, Method = "GET", Host = "a.test", Uri = "/b", Status = 200, RequestId = "bbbbbbbbbbbbbbbb" });
+    store.Add(new PhpRecord { RequestId = "aaaaaaaaaaaaaaaa", Pid = 11, StartedAt = t0.AddMilliseconds(5), DurationMs = 180, Includes = 3 });
+    store.Add(new PhpRecord { RequestId = "bbbbbbbbbbbbbbbb", Pid = 22, StartedAt = t0.AddMilliseconds(15), DurationMs = 180 });
+    store.Add(new QueryRecord { StartedAt = t0.AddMilliseconds(50), Sql = "SELECT 'from a'", TotalMs = 4, Pid = 11 });
+    store.Add(new QueryRecord { StartedAt = t0.AddMilliseconds(60), Sql = "SELECT 'from b'", TotalMs = 6, Pid = 22 });
+    var snap = store.Snapshot(true);
+    var a = snap.Requests.Single(x => x.Request.Uri == "/a"); var b = snap.Requests.Single(x => x.Request.Uri == "/b");
+    Eq(1, a.Queries.Count); Eq("SELECT 'from a'", a.Queries[0].Sql); Eq(4.0, a.SqlMs); Eq(3, a.Php!.Includes);
+    Eq(1, b.Queries.Count); Eq("SELECT 'from b'", b.Queries[0].Sql);
+    store.Add(new BrowserRecord { RequestId = "aaaaaaaaaaaaaaaa", LcpMs = 1200 });
+    Eq(1200.0, store.Snapshot(true).Requests.Single(x => x.Request.Uri == "/a").Browser!.LcpMs!.Value);
+    True(store.Snapshot(true).Requests.Single(x => x.Request.Uri == "/b").Browser == null);
+    var id = a.Request.Id; store.Remove(id);
+    True(store.FindPhp("aaaaaaaaaaaaaaaa") == null, "removing a request drops its PHP record");
+    store.Clear(); True(store.FindPhp("bbbbbbbbbbbbbbbb") == null);
+});
+CheckS("browser beacon: only the exact shape with the right key is accepted; numbers are clamped; origin is checked", () =>
+{
+    var ok = BrowserProbe.ParseBeacon("{\"key\":\"k3y\",\"id\":\"0123456789abcdef\",\"fcp\":812.5,\"lcp\":99999999999,\"cls\":0.02,\"bytes\":5000,\"res\":12}", "k3y");
+    True(ok != null); Eq("0123456789abcdef", ok!.RequestId); Eq(812.5, ok.FcpMs!.Value);
+    True(ok.LcpMs!.Value <= 3_600_000, "clamped"); Eq(5000L, ok.TransferBytes!.Value); Eq(12, ok.Resources!.Value);
+    True(BrowserProbe.ParseBeacon("{\"key\":\"nope\",\"id\":\"0123456789abcdef\"}", "k3y") == null, "wrong key");
+    True(BrowserProbe.ParseBeacon("{\"key\":\"k3y\",\"id\":\"../../etc\"}", "k3y") == null, "bad id");
+    True(BrowserProbe.ParseBeacon("{\"key\":\"k3y\",\"id\":\"0123456789ABCDEF\"}", "k3y") == null, "upper-case id");
+    True(BrowserProbe.ParseBeacon("[1,2]", "k3y") == null && BrowserProbe.ParseBeacon("not json", "k3y") == null && BrowserProbe.ParseBeacon("", "k3y") == null);
+    True(BrowserProbe.ParseBeacon(new string('x', BrowserProbe.MaxBeaconBytes + 1), "k3y") == null, "too big");
+    var neg = BrowserProbe.ParseBeacon("{\"key\":\"k3y\",\"id\":\"0123456789abcdef\",\"fcp\":-4}", "k3y")!;
+    True(neg.FcpMs == null, "negative numbers dropped");
+    True(BrowserProbe.OriginAllowed("https://shop.test", "test") && BrowserProbe.OriginAllowed(null, "test"));
+    True(!BrowserProbe.OriginAllowed("https://evil.com", "test") && !BrowserProbe.OriginAllowed("https://shop.test.evil.com", "test"));
+    True(!BrowserProbe.OriginAllowed("file:///x", "test") && !BrowserProbe.OriginAllowed("garbage", "test"));
+});
+await Check("probe server: serves the script and takes beacons end-to-end; wrong key and foreign origin are ignored", async () =>
+{
+    var store = new ProfileStore(); var key = store.BeaconKey;
+    var port = FreePort();
+    using var srv = new ProbeServer(store, port, "test");
+    True(srv.TryStart(), "starts");
+    using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+    var js = await http.GetAsync(BrowserProbe.ScriptPath);
+    Eq(HttpStatusCode.OK, js.StatusCode); True((await js.Content.ReadAsStringAsync()).Contains("PerformanceObserver"));
+    async Task<HttpStatusCode> Beacon(string json, string? origin = null)
+    {
+        var rq = new HttpRequestMessage(HttpMethod.Post, BrowserProbe.BeaconPath) { Content = new StringContent(json, Encoding.UTF8, "text/plain") };
+        if (origin != null) rq.Headers.Add("Origin", origin);
+        return (await http.SendAsync(rq)).StatusCode;
+    }
+    Eq(HttpStatusCode.NoContent, await Beacon("{\"key\":\"" + key + "\",\"id\":\"0123456789abcdef\",\"lcp\":900}", "https://a.test"));
+    Eq(HttpStatusCode.NoContent, await Beacon("{\"key\":\"bad\",\"id\":\"fedcba9876543210\",\"lcp\":1}"));
+    Eq(HttpStatusCode.Forbidden, await Beacon("{\"key\":\"" + key + "\",\"id\":\"aaaaaaaaaaaaaaaa\",\"lcp\":1}", "https://evil.com"));
+    store.Add(new RequestRecord { StartedAt = DateTimeOffset.UtcNow, DurationMs = 1, Method = "GET", Host = "a.test", Uri = "/", RequestId = "0123456789abcdef" });
+    Eq(900.0, store.Snapshot(true).Requests[0].Browser!.LcpMs!.Value);
+    True(store.FindRequest(-1) == null);
+    var other = new ProbeServer(store, port, "test");
+    True(!other.TryStart(), "a busy port is reported, not thrown"); other.Dispose();
+});
+CheckS("template hints: the collector flags only the listed hosts, and loads the overlay only for them", () =>
+{
+    var none = PhpCollectorScript.Generate(@"C:\x.tsv", "k3y", true);
+    True(none.Contains("$hintHosts = array()"), "no hosts by default");
+    var on = PhpCollectorScript.Generate(@"C:\x.tsv", "k3y", true, new[] { "Shop.Test", "o'brien.test" }, hintBlocks: false);
+    True(on.Contains("'shop.test'"), "host lower-cased"); True(on.Contains(TemplateHintsOverlay.EnvFlag), "sets the env flag");
+    True(on.Contains("'templates'") && !on.Contains("'blocks'"), "templates mode");
+    True(on.Contains("o\\'brien.test"), "a quote in a host name cannot break out of the PHP string");
+    True(on.Contains("data-hints"), "the probe tag carries the hints marker");
+    var blocks = PhpCollectorScript.Generate(@"C:\x.tsv", "k3y", true, new[] { "shop.test" }, hintBlocks: true);
+    True(blocks.Contains("'blocks'"), "blocks mode");
+});
+await Check("template hints: the probe script loads the overlay only when asked, and the probe server serves it", async () =>
+{
+    True(BrowserProbe.Script.Contains("data-hints") && BrowserProbe.Script.Contains(TemplateHintsOverlay.ScriptPath), "probe loads the overlay on request");
+    True(TemplateHintsOverlay.Script.Contains("rs:tpl") && TemplateHintsOverlay.Script.Contains("attachShadow"), "overlay reads the framework markers inside a shadow root");
+    var store = new ProfileStore(); var port = FreePort();
+    using var srv = new ProbeServer(store, port, "test");
+    True(srv.TryStart(), "starts");
+    using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}") };
+    var res = await http.GetAsync(TemplateHintsOverlay.ScriptPath);
+    Eq(HttpStatusCode.OK, res.StatusCode); True((await res.Content.ReadAsStringAsync()).Contains("rs:tpl"));
+    True(res.Headers.CacheControl?.NoStore == true, "never cached");
+});
+CheckS("xdebug: picks the newest stable build for each PHP, skips prereleases, and says no to PHP older than 7.4", () =>
+{
+    var html = "<a href=\"/files/php_xdebug-3.5.3-8.0-nts-vs16-x86_64.dll\">a</a>" +
+               "<a href=\"/files/php_xdebug-3.5.1-8.0-nts-vs16-x86_64.dll\">b</a>" +
+               "<a href=\"/files/php_xdebug-3.6.0alpha1-8.0-nts-vs16-x86_64.dll\">c</a>" +
+               "<a href=\"/files/php_xdebug-3.5.3-8.0-ts-vs16-x86_64.dll\">ts</a>" +
+               "<a href=\"/files/php_xdebug-3.1.6-7.4-vc15-nts-x86_64.dll\">d</a>" +
+               "<a href=\"/files/php_xdebug-3.1.6-7.4-vc15-nts.dll\">32-bit</a>";
+    var b80 = XdebugResolver.FromListing(html, "8.0")!;
+    Eq("3.5.3", b80.Version); True(b80.FileName.EndsWith("8.0-nts-vs16-x86_64.dll") && !b80.FileName.Contains("-ts-"), b80.FileName);
+    True(b80.Url.StartsWith("https://xdebug.org/files/"), b80.Url);
+    var b74 = XdebugResolver.FromListing(html, "7.4")!;
+    Eq("3.1.6", b74.Version); True(b74.FileName.Contains("vc15-nts-x86_64"), b74.FileName);
+    True(XdebugResolver.FromListing(html, "8.4") == null, "no build for that PHP");
+    True(XdebugResolver.Supports("7.4") && XdebugResolver.Supports("8.5") && !XdebugResolver.Supports("7.3") && !XdebugResolver.Supports("5.6"));
+});
+await Check("xdebug: downloads use their own connection and survive a listing page that sends more than it declares", async () =>
+{
+    // A tiny server that answers like xdebug.org: Content-Length smaller than the body, then keeps the connection open.
+    var port = FreePort(); var l = new TcpListener(IPAddress.Loopback, port); l.Start();
+    var conns = 0;
+    var srv = Task.Run(async () =>
+    {
+        for (var i = 0; i < 2; i++)
+        {
+            using var c = await l.AcceptTcpClientAsync(); conns++;
+            var st = c.GetStream(); var buf = new byte[4096]; await st.ReadAsync(buf);
+            var body = "OKAY"; var extra = "56:&nbsp;deadbeef href='/files/x.tgz'>source</a></li>";
+            await st.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n{body}{extra}"));
+        }
+    });
+    using var http = new HttpClient();
+    var a = await XdebugResolver.FetchAsync(http, $"http://127.0.0.1:{port}/a");
+    var b = await XdebugResolver.FetchAsync(http, $"http://127.0.0.1:{port}/b");
+    Eq("OKAY", Encoding.ASCII.GetString(a)); Eq("OKAY", Encoding.ASCII.GetString(b));
+    await srv; l.Stop(); Eq(2, conns);
+});
+CheckS("cachegrind: names, calls, self and inclusive time come out of a compressed Xdebug profile", () =>
+{
+    const string cg = "version: 1\ncreator: xdebug 3.5.3\ncmd: /var/www/index.php\npart: 1\n\npositions: line\nevents: Time_(10ns) Memory_(bytes)\n\n" +
+        "fl=(1) /var/www/index.php\nfn=(1) {main}\n1 100 0\ncfl=(2) /var/www/lib.php\ncfn=(2) heavy\ncalls=2 0 0\n5 900000 0\n\n" +
+        "fl=(2)\nfn=(2)\n10 600000 0\n\nfl=(1)\nfn=(3) strlen\n7 300 0\n";
+    var sum = CachegrindParser.Parse(new StringReader(cg), "test");
+    Eq("/var/www/index.php", sum.Command);
+    var heavy = sum.Functions.Single(f => f.Name == "heavy");
+    Eq(2L, heavy.Calls); True(Math.Abs(heavy.SelfMs - 6.0) < 0.01, $"self {heavy.SelfMs}"); True(heavy.File.EndsWith("lib.php"), heavy.File);
+    Eq("heavy", sum.Functions[0].Name);                                // sorted by self time
+    var main = sum.Functions.Single(f => f.Name == "{main}");
+    True(main.InclusiveMs > heavy.SelfMs, $"main inclusive {main.InclusiveMs}");
+    True(sum.Functions.Length == 3 && sum.TotalMs > 0);
+});
+CheckS("lighthouse: scores and the main timings come out of a report; the command line is fixed", () =>
+{
+    const string rep = "{\"lighthouseVersion\":\"12.0.0\",\"categories\":{\"performance\":{\"title\":\"Performance\",\"score\":0.93},\"seo\":{\"title\":\"SEO\",\"score\":0.5},\"accessibility\":{\"title\":\"Accessibility\",\"score\":null}}," +
+        "\"audits\":{\"largest-contentful-paint\":{\"displayValue\":\"1.2 s\",\"score\":0.95},\"cumulative-layout-shift\":{\"displayValue\":\"0.4\",\"score\":0.1}}}";
+    var r = LighthouseRunner.ParseReport(rep, "https://a.test/", "r.html");
+    Eq("12.0.0", r.Version); Eq("https://a.test/", r.Url);
+    Eq(93, r.Scores.Single(x => x.Id == "performance").Score); Eq(50, r.Scores.Single(x => x.Id == "seo").Score);
+    True(!r.Scores.Any(x => x.Id == "accessibility"), "a null score is left out");
+    Eq("good", r.Metrics.Single(m => m.Id == "largest-contentful-paint").Rating);
+    Eq("poor", r.Metrics.Single(m => m.Id == "cumulative-layout-shift").Rating);
+    var args = LighthouseRunner.Arguments("https://a.test/", "out/base");
+    True(args.Contains("https://a.test/") && args.Any(a => a.Contains("headless")), string.Join(" ", args));
+    Eq("C:\\b\\chrome.exe", LighthouseRunner.FindBrowser(f => f == "C:\\b\\chrome.exe", k => k == "CHROME_PATH" ? "C:\\b\\chrome.exe" : null));
+});
+CheckS("php.ini (profiling): prepend file and the Xdebug section appear only when asked", () =>
+{
+    var st = new Settings();
+    var plain = ConfigWriter.PhpIni("8.3", @"C:\php\8.3", @"C:\tmp", st);
+    True(!plain.Contains("auto_prepend_file") && !plain.Contains("xdebug"));
+    var o = PhpIniOptions.Default("8.3") with { PrependFile = @"C:\etc\profiler\rs_collect.php", Xdebug = new XdebugIniOptions("s3cret", @"C:\data\xdebug") };
+    var on = ConfigWriter.PhpIni("8.3", @"C:\php\8.3", @"C:\tmp", st, o);
+    True(on.Contains("auto_prepend_file=\"C:/etc/profiler/rs_collect.php\"") || on.Contains("auto_prepend_file=\"C:\\etc\\profiler\\rs_collect.php\""), on);
+    True(on.Contains("zend_extension=xdebug") && on.Contains("xdebug.mode=profile") && on.Contains("xdebug.start_with_request=trigger") && on.Contains("xdebug.trigger_value=\"s3cret\""));
+    True(on.IndexOf("zend_extension=xdebug") < on.IndexOf("[xdebug]"));
+});
+CheckS("nginx and Apache: the /__rs/ proxy to the probe exists only for PHP sites with profiling and the probe on", () =>
+{
+    var st = new Settings { ProbePort = 7767 };
+    var php = new SiteSpec("a.test", @"C:\sites\a", null, "8.3", false, "", "");
+    var offN = ConfigWriter.Nginx(st, new[] { php }, @"C:\nginx", @"C:\etc\nginx", @"C:\etc\nginx\fastcgi_params", true);
+    True(!offN.Contains("/__rs/"), "probe off");
+    var onN = ConfigWriter.Nginx(st, new[] { php }, @"C:\nginx", @"C:\etc\nginx", @"C:\etc\nginx\fastcgi_params", true, browserProbe: true);
+    Eq(1, System.Text.RegularExpressions.Regex.Matches(onN, @"location \^~ /__rs/").Count);
+    True(onN.Contains("127.0.0.1:7767"));
+    var onA = ConfigWriter.Apache(st, new[] { php }, @"C:\apache", @"C:\etc\apache", true, browserProbe: true);
+    True(onA.Contains("ProxyPass \"/__rs/\"") && onA.Contains("7767"), "apache");
+    True(!ConfigWriter.Apache(st, new[] { php }, @"C:\apache", @"C:\etc\apache", true, browserProbe: false).Contains("/__rs/"));
 });
 
 // ===================================================================== dashboard API
@@ -1848,6 +2057,18 @@ await Check("site test API: needs the token; returns the report; an unknown site
     Eq(HttpStatusCode.OK, code); True(body.GetProperty("report").GetString()!.Contains("200 OK"));
     var (c2, b2) = await Call(Req(HttpMethod.Post, "/api/sites/gone/check", new { }));
     Eq(HttpStatusCode.BadRequest, c2); True(b2.GetProperty("error").GetString()!.Contains("no site"));
+});
+await Check("profiler tools API: needs the token; defaults are readable; unavailable actions are a readable 400", async () =>
+{
+    Eq(HttpStatusCode.Unauthorized, (await Call(Req(HttpMethod.Get, "/api/profile/tools", null, token: false))).Item1);
+    var (c, b) = await Call(Req(HttpMethod.Get, "/api/profile/tools"));
+    Eq(HttpStatusCode.OK, c); True(b.TryGetProperty("lighthouseReady", out _) && b.TryGetProperty("xdebug", out _));
+    Eq(HttpStatusCode.Unauthorized, (await Call(Req(HttpMethod.Post, "/api/profile/lighthouse", new { site = "a.test" }, token: false))).Item1);
+    var (c2, b2) = await Call(Req(HttpMethod.Post, "/api/profile/lighthouse", new { site = "a.test" }));
+    Eq(HttpStatusCode.BadRequest, c2); True(b2.GetProperty("error").GetString()!.Length > 0);
+    var (c3, _) = await Call(Req(HttpMethod.Post, "/api/profile/requests/5/xdebug", new { }));
+    Eq(HttpStatusCode.BadRequest, c3);
+    Eq(HttpStatusCode.Unauthorized, (await Call(Req(HttpMethod.Post, "/api/profile/requests/5/xdebug", new { }, token: false))).Item1);
 });
 CheckS("hosts file: Contains sees real entries only, not comments", () =>
 {

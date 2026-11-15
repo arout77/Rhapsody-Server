@@ -216,6 +216,35 @@ label .hint.bad { color: var(--bad); }
 .q pre { margin: .5rem 0 0; font: .78rem/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; background: var(--raised); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: .6rem; }
 .q .err { color: var(--bad); font: .8125rem var(--mono); margin-top: .35rem; }
 
+
+.vt-row { display: flex; flex-wrap: wrap; gap: .4rem; }
+.vt { font: .75rem var(--mono); padding: .2rem .5rem; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--raised); white-space: nowrap; }
+.vt b { font-weight: 600; margin-right: .4rem; color: var(--muted); }
+.vt.good { border-color: #2f9e6d; }
+.vt.ok { border-color: var(--warn); }
+.vt.poor { border-color: var(--bad); }
+.xd { display: grid; gap: .5rem; }
+.xd .err, .lh-res + .err { color: var(--bad); font: .8125rem var(--mono); overflow-wrap: anywhere; white-space: pre-wrap; }
+.xd-res { display: grid; gap: .4rem; }
+.xd-t { width: 100%; border-collapse: collapse; font: .78rem var(--mono); }
+.xd-t th, .xd-t td { padding: .25rem .5rem; border-top: 1px solid var(--line); text-align: left; }
+.xd-t th { color: var(--muted); font-weight: 600; }
+.xd-t .n { text-align: right; white-space: nowrap; }
+.xd-t .n.warn { color: var(--warn); }
+.xd-t .n.bad { color: var(--bad); }
+.xd-t .fl { color: var(--muted); }
+.xd-t td:first-child { overflow-wrap: anywhere; }
+.xd-branches { display: grid; gap: .4rem; }
+.xd-branch { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: .8rem; align-items: center; }
+.lh-scores { display: flex; flex-wrap: wrap; gap: .6rem; }
+.lh-score { display: grid; justify-items: center; min-width: 5.5rem; padding: .5rem .7rem; border: 2px solid var(--line); border-radius: var(--radius); }
+.lh-score b { font: 700 1.4rem var(--mono); }
+.lh-score span { font-size: .75rem; color: var(--muted); }
+.lh-score.good { border-color: #2f9e6d; }
+.lh-score.ok { border-color: var(--warn); }
+.lh-score.poor { border-color: var(--bad); }
+.lh-res { display: grid; gap: .6rem; }
+
 /* AI help */
 .ai-form { display: grid; gap: 1rem; max-width: 40rem; margin-top: 1.1rem; }
 .ai-onoff { display: flex; gap: .8rem; align-items: center; }
@@ -586,6 +615,7 @@ button.log-row:hover { background: var(--hover); }
   let S = null, V = null, P = null, A = null, created = null, op = null, err = null, conn = false, connectedOnce = false, lastState = '';
   let wasBusy = false, dismissed = false, doneTimer = null, apacheFile = null;
   let pfTab = 'requests', pfSel = null, pfPage = 1; const pfOpen = new Set(); const PF_SIZE = 30;
+  let pfTools = null, xdRes = {}, xdBusy = null, xdErr = {}, lhRes = null, lhBusy = false, lhErr = null, lhSite = '';
   const busy = () => !!(op && op.running);
   const route = () => (location.hash.match(/^#\/(\w+)/) || [, 'services'])[1];
 
@@ -631,7 +661,7 @@ button.log-row:hover { background: var(--hover); }
     }
     await refresh();
     if (route() === 'versions') loadVersions();
-    if (route() === 'profiler') loadProfile();
+    if (route() === 'profiler') { loadProfile(); loadTools(); }
     if (route() === 'modules') loadModules();
     render();
   }
@@ -643,6 +673,12 @@ button.log-row:hover { background: var(--hover); }
 
   async function loadProfile() {
     try { P = await api('GET', `/api/profile?page=${pfPage}&pageSize=${PF_SIZE}`); pfPage = P.page || 1; } catch (e) { err = e.message; }
+    if (route() === 'profiler') render();
+    if (route() === 'profiler' && P && P.enabled && !pfTools) loadTools();
+  }
+
+  async function loadTools() {
+    try { pfTools = await api('GET', '/api/profile/tools'); } catch (e) { if (e.status === 401) { S = null; renderLocked(); return; } }
     if (route() === 'profiler') render();
   }
 
@@ -1310,6 +1346,82 @@ button.log-row:hover { background: var(--hover); }
     await act(() => api('POST', '/api/profile/clear'));
   }
 
+
+
+  // Core Web Vitals thresholds (web.dev): good up to the first number, poor beyond the second.
+  function vital(label, val, good, poor, fmt, tip) {
+    if (val == null) return null;
+    const cls = val <= good ? 'good' : val <= poor ? 'ok' : 'poor';
+    return h('span', { class: 'vt ' + cls, title: tip || '' }, h('b', {}, label), fmt(val));
+  }
+
+  function phpLine(v) {
+    if (!v.php) return null;
+    return h('div', { class: 'muted small' },
+      `PHP worker #${v.php.pid} · ${fmtMs(v.php.durationMs)} · ${fmtBytes(v.php.peakMemoryBytes)} peak memory · ${v.php.includes} files loaded. ` +
+      'The SQL below is exactly what this worker ran for this request.');
+  }
+
+  function browserBlock(v) {
+    const b = v.browser;
+    if (!b) {
+      return pfTools && pfTools.browserProbe && !pfTools.browserProbeRunning
+        ? h('div', { class: 'muted small' }, 'Browser timings aren’t being collected right now: the probe’s local port is probably in use by another program.')
+        : null;
+    }
+    const ms = x => fmtMs(x);
+    return h('div', { class: 'vt-row' },
+      vital('TTFB', b.ttfbMs, 800, 1800, ms, 'Time to first byte, as the browser saw it'),
+      vital('FCP', b.fcpMs, 1800, 3000, ms, 'First Contentful Paint'),
+      vital('LCP', b.lcpMs, 2500, 4000, ms, 'Largest Contentful Paint'),
+      vital('CLS', b.cls, 0.1, 0.25, x => x.toFixed(3), 'Cumulative Layout Shift'),
+      vital('INP', b.inpMs, 200, 500, ms, 'Slowest interaction so far (Interaction to Next Paint)'),
+      b.domContentLoadedMs != null ? h('span', { class: 'vt', title: 'DOMContentLoaded' }, h('b', {}, 'DOM'), ms(b.domContentLoadedMs)) : null,
+      b.loadMs != null ? h('span', { class: 'vt', title: 'Load event' }, h('b', {}, 'Load'), ms(b.loadMs)) : null,
+      b.transferBytes != null ? h('span', { class: 'vt', title: 'Bytes transferred by the page and its resources' }, h('b', {}, 'Transfer'), fmtBytes(b.transferBytes) + (b.resources != null ? ' · ' + b.resources + ' files' : '')) : null);
+  }
+
+  async function runXdebug(id) {
+    xdBusy = id; delete xdErr[id]; render();
+    try { xdRes[id] = await api('POST', `/api/profile/requests/${id}/xdebug`); }
+    catch (e) { if (e.status === 401) { S = null; renderLocked(); return; } xdErr[id] = e.message; }
+    xdBusy = null; render();
+  }
+
+  function xdebugBlock(v) {
+    const r = v.request;
+    const host = r.host.split(':')[0];
+    const site = (S.sites || []).find(x => x.domain.toLowerCase() === host.toLowerCase());
+    if (!site) return null;
+    const br = pfTools && pfTools.xdebug.find(x => x.branch === site.php);
+    const res = xdRes[r.id];
+    let action;
+    if (!br) action = null;
+    else if (!br.supported) action = h('span', { class: 'muted small' }, `Xdebug profiling needs PHP 7.4 or newer (this site uses ${site.php}).`);
+    else if (!br.enabled) action = h('button', { class: 'btn sm', type: 'button', disabled: busy(), onclick: () => act(() => api('POST', '/api/profile/xdebug', { branch: site.php, on: true })) },
+      icon('zap'), `Turn on Xdebug for PHP ${site.php}`);
+    else if (r.method !== 'GET') action = h('span', { class: 'muted small' }, 'Only GET requests can be repeated for profiling. For this one, send it yourself with the cookie shown under Tools.');
+    else action = h('button', { class: 'btn sm', type: 'button', disabled: xdBusy != null, onclick: () => runXdebug(r.id) },
+      icon('zap'), xdBusy === r.id ? 'Profiling…' : 'Profile with Xdebug');
+    return h('div', { class: 'xd' }, action ? h('div', { class: 'pf-actions' }, action) : null,
+      xdBusy === r.id ? h('div', { class: 'muted small' }, 'Loading the page again with Xdebug’s profiler on. It runs slower than normal: that is Xdebug, not your code.') : null,
+      xdErr[r.id] ? h('div', { class: 'err' }, xdErr[r.id]) : null,
+      res ? xdebugTable(res) : null);
+  }
+
+  function xdebugTable(res) {
+    const name = f => f.split(/[\\/]/).pop();
+    return h('div', { class: 'xd-res' },
+      h('div', { class: 'muted small' }, `${res.functionCount} functions, ${fmtMs(res.totalMs)} of PHP time under Xdebug. Costliest by self time (time in the function itself, not what it called):`),
+      h('table', { class: 'xd-t' },
+        h('thead', {}, h('tr', {}, h('th', {}, 'Function'), h('th', { class: 'n' }, 'Calls'), h('th', { class: 'n' }, 'Self'), h('th', { class: 'n' }, 'Incl.'))),
+        h('tbody', {}, res.functions.slice(0, 25).map(f => h('tr', {},
+          h('td', { title: f.file }, h('span', { class: 'fn' }, f.name), h('span', { class: 'fl' }, ' ' + name(f.file))),
+          h('td', { class: 'n' }, String(f.calls)), h('td', { class: 'n ' + level(f.selfMs) }, fmtMs(f.selfMs)), h('td', { class: 'n' }, fmtMs(f.inclusiveMs)))))),
+      h('div', { class: 'muted small' }, 'The full profile is a cachegrind file you can open in QCacheGrind, PhpStorm or webgrind. ',
+        h('button', { class: 'btn sm quiet', type: 'button', onclick: () => act(() => api('POST', '/api/open', { target: 'xdebug' })) }, 'Show profile folder')));
+  }
+
   const inspectRequest = (r) => explain({ kind: 'request', requestId: r.id }, 'Inspecting ' + r.method + ' ' + r.host + r.uri);
 
   function pager() {
@@ -1321,6 +1433,75 @@ button.log-row:hover { background: var(--hover); }
       h('button', { class: 'btn sm', type: 'button', disabled: P.page <= 1, onclick: () => go(1) }, 'Newest'),
       h('button', { class: 'btn sm', type: 'button', disabled: P.page <= 1, onclick: () => go(P.page - 1) }, 'Newer'),
       h('button', { class: 'btn sm', type: 'button', disabled: P.page >= P.pageCount, onclick: () => go(P.page + 1) }, 'Older'));
+  }
+
+
+  async function runLighthouse() {
+    lhBusy = true; lhErr = null; render();
+    try { lhRes = await api('POST', '/api/profile/lighthouse', { site: lhSite }); }
+    catch (e) { if (e.status === 401) { S = null; renderLocked(); return; } lhErr = e.message; }
+    lhBusy = false; render();
+  }
+
+  function toolsView() {
+    if (!pfTools) return h('p', { class: 'lede muted' }, 'Loading…');
+    const T = pfTools;
+    if (!lhSite && T.sites.length) lhSite = T.sites[0];
+    const xd = h('div', { class: 'ai-sec' },
+      h('h2', {}, 'Xdebug profiler'),
+      h('p', { class: 'ai-note' }, 'See which PHP functions a request spends its time in. Turn it on for a PHP version, then open a request and press “Profile with Xdebug”. Xdebug only profiles a request that carries a secret, so everything else runs at normal speed. The first time, Rhapsody Server downloads Xdebug’s DLL for that PHP from xdebug.org.'),
+      T.xdebug.length ? h('div', { class: 'xd-branches' }, T.xdebug.map(b => h('div', { class: 'xd-branch' },
+        h('span', { class: 'mono' }, 'PHP ' + b.branch + (b.inUse ? '' : ' (no site uses it)')),
+        h('span', { class: 'muted small' }, !b.supported ? 'needs PHP 7.4 or newer' : b.enabled ? 'profiler on' : b.installed ? 'downloaded, off' : 'off'),
+        b.supported ? h('button', { class: 'btn sm' + (b.enabled ? '' : ' primary'), type: 'button', disabled: busy(),
+          onclick: () => act(() => api('POST', '/api/profile/xdebug', { branch: b.branch, on: !b.enabled })) }, b.enabled ? 'Turn off' : 'Turn on') : null)))
+        : h('p', { class: 'muted small' }, 'No PHP is installed yet.'),
+      T.xdebugCookie ? h('p', { class: 'muted small' }, 'To profile a request from your own browser (a POST, or a page behind a login), send this cookie with it: ', h('code', {}, T.xdebugCookie)) : null);
+
+    const probe = h('div', { class: 'ai-sec' },
+      h('h2', {}, 'Browser timings (Web Vitals)'),
+      h('p', { class: 'ai-note' }, 'While profiling is on, a small script is added to the HTML pages your sites serve. It reports how long the browser took to paint the page (FCP, LCP, layout shift, load) back to this app, and they show up in each request. Nothing leaves this computer. It is added only on page loads, never on API calls or downloads.'),
+      h('div', { class: 'ai-onoff' },
+        h('button', { class: 'switch', role: 'switch', 'aria-checked': String(T.browserProbe), 'aria-label': 'Browser timings', disabled: busy(),
+          onclick: () => act(() => api('POST', '/api/profile/browser-probe', { on: !T.browserProbe })) }),
+        h('span', {}, T.browserProbe ? (T.browserProbeRunning ? 'On' : 'On, but not running yet (start the web server)') : 'Off')),
+      h('p', { class: 'muted small' }, 'Turning it on or off restarts the web server.'));
+
+    const TH = T.templateHints || { available: false, blocks: false, sites: [] };
+    const hints = h('div', { class: 'ai-sec' },
+      h('h2', {}, 'Template hints'),
+      h('p', { class: 'ai-note' }, 'Draws a border and a label around every part of a page, naming the template file that produced it, how Magento’s template hints did. Click a label to copy the file path. It works with Rhapsody apps running in development mode (APP_ENV=development) and has no effect anywhere else.'),
+      !TH.available ? h('p', { class: 'ai-status bad' }, 'Needs profiling and browser timings both switched on, because the overlay is loaded by the browser timings script.') : null,
+      TH.sites.length ? h('div', {}, TH.sites.map(x => h('div', { class: 'ai-onoff' },
+        h('button', { class: 'switch', role: 'switch', 'aria-checked': String(x.on), 'aria-label': 'Template hints for ' + x.domain, disabled: busy(),
+          onclick: () => act(() => api('POST', '/api/profile/template-hints', { site: x.name, on: !x.on })) }),
+        h('span', {}, x.domain + (x.on ? ': on' : ': off')))))
+        : h('p', { class: 'muted small' }, 'No sites yet.'),
+      h('label', { class: 'ai-onoff' },
+        h('input', { type: 'checkbox', checked: TH.blocks, disabled: busy(),
+          onchange: (e) => act(() => api('POST', '/api/profile/template-hints', { blocks: e.target.checked })) }),
+        h('span', {}, 'Also mark blocks, not only whole templates')),
+      h('p', { class: 'muted small' }, 'Takes effect on the next page load. Switching it on needs no restart.'));
+
+    const lh = h('div', { class: 'ai-sec' },
+      h('h2', {}, 'Lighthouse'),
+      h('p', { class: 'ai-note' }, 'Runs Google’s Lighthouse on one of your sites: performance, accessibility, best-practices and SEO scores, and the main timings. It takes about a minute and opens a headless copy of your browser.'),
+      !T.lighthouseReady ? h('p', { class: 'ai-status bad' }, T.lighthouseMissing) : null,
+      T.lighthouseReady ? h('div', { class: 'keyrow' },
+        h('select', { 'aria-label': 'Site', value: lhSite, onchange: e => { lhSite = e.target.value; } },
+          T.sites.map(d => h('option', { value: d, selected: d === lhSite }, d))),
+        h('button', { class: 'btn primary', type: 'button', disabled: lhBusy || !T.sites.length, onclick: runLighthouse }, lhBusy ? 'Running…' : 'Run Lighthouse')) : null,
+      lhBusy ? h('p', { class: 'muted small' }, 'Running Lighthouse. The first run downloads it through npm, which can take a minute longer.') : null,
+      lhErr ? h('div', { class: 'err' }, lhErr) : null,
+      lhRes ? h('div', { class: 'lh-res' },
+        h('div', { class: 'muted small' }, lhRes.url + (lhRes.version ? ' · Lighthouse ' + lhRes.version : '')),
+        h('div', { class: 'lh-scores' }, lhRes.scores.map(sc => h('div', { class: 'lh-score ' + (sc.score >= 90 ? 'good' : sc.score >= 50 ? 'ok' : 'poor') },
+          h('b', {}, String(sc.score)), h('span', {}, sc.title)))),
+        h('div', { class: 'vt-row' }, lhRes.metrics.map(m => h('span', { class: 'vt ' + (m.rating || ''), title: m.title }, h('b', {}, m.title), m.value))),
+        h('div', { class: 'muted small' }, 'The full report was saved as an HTML file. ',
+          h('button', { class: 'btn sm quiet', type: 'button', onclick: () => act(() => api('POST', '/api/open', { target: 'lighthouse' })) }, 'Show reports folder'))) : null);
+
+    return h('div', { class: 'ai-form' }, xd, probe, hints, lh);
   }
 
   function viewProfiler() {
@@ -1340,8 +1521,9 @@ button.log-row:hover { background: var(--hover); }
 
     const tabs = h('div', { class: 'seg', role: 'group', 'aria-label': 'View' },
       h('button', { 'aria-pressed': String(pfTab === 'requests'), onclick: () => { pfTab = 'requests'; render(); } }, 'Requests'),
-      h('button', { 'aria-pressed': String(pfTab === 'queries'), onclick: () => { pfTab = 'queries'; render(); } }, 'Queries'));
-    const lede = h('p', { class: 'lede muted' }, 'Pages and API calls only: images, scripts, styles and fonts are skipped. Queries are matched to requests by time, so requests that overlap can share queries. Only the newest are kept.');
+      h('button', { 'aria-pressed': String(pfTab === 'queries'), onclick: () => { pfTab = 'queries'; render(); } }, 'Queries'),
+      h('button', { 'aria-pressed': String(pfTab === 'tools'), onclick: () => { pfTab = 'tools'; loadTools(); render(); } }, 'Tools'));
+    const lede = h('p', { class: 'lede muted' }, 'Pages and API calls only: images, scripts, styles and fonts are skipped. For PHP pages, each request’s SQL is matched exactly (by the PHP worker that ran it); anything else is matched by time, so overlapping requests can share queries. Only the newest are kept.');
     let body;
     if (pfTab === 'requests') {
       if (!P.requests.length) body = h('div', { class: 'empty' }, h('p', {}, 'No requests yet. Open one of your sites and they will appear here.'));
@@ -1360,8 +1542,11 @@ button.log-row:hover { background: var(--hover); }
             `${fmtWhen(sel.request.startedAt)} · ${sel.request.status} · ${fmtMs(sel.request.durationMs)} total` +
             (sel.request.upstreamMs != null ? ` · ${fmtMs(sel.request.upstreamMs)} in PHP` : '') +
             ` · ${sel.queries.length} quer${sel.queries.length === 1 ? 'y' : 'ies'}, ${fmtMs(sel.sqlMs)} in SQL`),
+          phpLine(sel), browserBlock(sel), xdebugBlock(sel),
           sel.queries.length ? sel.queries.map(queryItem) : h('p', { class: 'muted small' }, 'No SQL ran during this request.')) : null);
       }
+    } else if (pfTab === 'tools') {
+      body = toolsView();
     } else {
       body = P.queries.length
         ? h('div', { class: 'pf-detail' }, P.queries.map(queryItem))

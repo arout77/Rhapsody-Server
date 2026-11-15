@@ -29,6 +29,8 @@ public sealed class Stack : IDisposable
     public Profiling.ProfileStore Profile { get; } = new();
     Profiling.MySqlProxy? _dbProxy;
     Profiling.AccessLogTailer? _tailer;
+    Profiling.PhpLogTailer? _phpTailer;
+    Profiling.ProbeServer? _probe;
 
     /// <summary>
     /// The port MariaDB itself listens on. With profiling on it sits behind the recording proxy,
@@ -36,6 +38,14 @@ public sealed class Stack : IDisposable
     /// </summary>
     public int DbBackendPort => Settings.ProfilingEnabled ? Settings.MariaDbInternalPort : Settings.MariaDbPort;
     public string ProfileLogPath => Path.Combine(Paths.Etc, WebServerId, "logs", "profile.tsv");
+
+    /// <summary>The PHP collector's own log (one line per PHP request) and the script that writes it.</summary>
+    public string PhpProfileLogPath => Path.Combine(Paths.Etc, "profiler", "php-profile.tsv");
+    public string CollectorPath => Path.Combine(Paths.Etc, "profiler", Profiling.PhpCollectorScript.FileName);
+    /// <summary>Where Xdebug writes its profiler files.</summary>
+    public string XdebugDir => Path.Combine(Paths.Data, "xdebug");
+    /// <summary>True while the browser probe is really being served (profiling on, the option on, and its port free).</summary>
+    public bool BrowserProbeActive => Settings.ProfilingEnabled && Settings.ProfilingBrowserProbe && _probe != null;
 
     /// <summary>Title of the long-running operation in progress (start, install, scaffold...), if any.</summary>
     public string? CurrentOperation { get; private set; }
@@ -254,7 +264,123 @@ public sealed class Stack : IDisposable
         var on = PhpExtensions.Effective(Settings.PhpExtensions.GetValueOrDefault(branch), branch, available);
         var opcacheOn = on.Contains("opcache");
         var dll = File.Exists(Path.Combine(PhpDir(branch), "ext", "php_opcache.dll"));
-        return new PhpIniOptions(on, LoadOpcacheModule: dll && opcacheOn, OpcacheEnabled: opcacheOn);
+        return new PhpIniOptions(on, LoadOpcacheModule: dll && opcacheOn, OpcacheEnabled: opcacheOn,
+            PrependFile: Settings.ProfilingEnabled ? WriteCollector() : null,
+            Xdebug: XdebugIniFor(branch));
+    }
+
+    /// <summary>Writes the collector PHP script (it holds the log path and this run's beacon key) and returns its path.</summary>
+    string WriteCollector()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(CollectorPath)!);
+        File.WriteAllText(CollectorPath, Profiling.PhpCollectorScript.Generate(PhpProfileLogPath, Profile.BeaconKey, BrowserProbeActive, TemplateHintHosts(), Settings.TemplateHintBlocks));
+        return CollectorPath;
+    }
+
+    // ---- template hints: borders and file labels around each template on a page. The collector switches them on per site.
+    public bool TemplateHintsOn(string siteName) => Settings.TemplateHintSites.Contains(siteName, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Host names the collector should switch hints on for. Empty unless profiling and the browser probe (which loads the overlay) are running.</summary>
+    public List<string> TemplateHintHosts() => !Settings.ProfilingEnabled || !BrowserProbeActive
+        ? new List<string>()
+        : Settings.Sites.Where(x => TemplateHintsOn(x.Name)).Select(x => Domain(x.Name).ToLowerInvariant()).ToList();
+
+    /// <summary>No restart: the collector script is read on every request, so this takes effect on the next page load.</summary>
+    public void SetTemplateHints(string siteName, bool on)
+    {
+        var site = Settings.Sites.FirstOrDefault(x => x.Name.Equals(siteName, StringComparison.OrdinalIgnoreCase))
+            ?? throw new ArgumentException($"There is no site called {siteName}.");
+        Settings.TemplateHintSites.RemoveAll(x => x.Equals(site.Name, StringComparison.OrdinalIgnoreCase));
+        if (on) Settings.TemplateHintSites.Add(site.Name);
+        Save();
+        if (Settings.ProfilingEnabled) WriteCollector();
+    }
+
+    public void SetTemplateHintBlocks(bool on)
+    {
+        Settings.TemplateHintBlocks = on;
+        Save();
+        if (Settings.ProfilingEnabled) WriteCollector();
+    }
+
+    public bool XdebugInstalled(string branch) => File.Exists(Path.Combine(PhpDir(branch), "ext", "php_xdebug.dll"));
+    public bool XdebugOn(string branch) => Settings.XdebugBranches.Contains(branch) && XdebugInstalled(branch) && Profiling.XdebugResolver.Supports(branch);
+
+    XdebugIniOptions? XdebugIniFor(string branch)
+    {
+        if (!XdebugOn(branch)) return null;
+        Directory.CreateDirectory(XdebugDir);
+        return new XdebugIniOptions(EnsureXdebugTrigger(), XdebugDir);
+    }
+
+    string EnsureXdebugTrigger()
+    {
+        if (string.IsNullOrEmpty(Settings.XdebugTrigger))
+        {
+            Settings.XdebugTrigger = Convert.ToHexString(RandomNumberGenerator.GetBytes(12)).ToLowerInvariant();
+            Save();
+        }
+        return Settings.XdebugTrigger;
+    }
+
+    /// <summary>
+    /// Turns Xdebug's profiler on or off for one PHP version. On: downloads Xdebug's DLL for that PHP the first time
+    /// (from xdebug.org), writes php.ini, and restarts that version's workers. Xdebug only profiles a request that
+    /// carries the secret, so it costs nothing for ordinary requests.
+    /// </summary>
+    public async Task SetXdebugAsync(string branch, bool on, IProgress<string>? p = null, CancellationToken ct = default)
+    {
+        if (!IsSeriesInstalled("php", branch)) throw new InvalidOperationException($"PHP {branch} isn't installed.");
+        if (!Profiling.XdebugResolver.Supports(branch)) throw new InvalidOperationException($"Xdebug profiling needs PHP 7.4 or newer (this is PHP {branch}).");
+        if (on)
+        {
+            if (!XdebugInstalled(branch))
+            {
+                p?.Report($"Finding Xdebug for PHP {branch}...");
+                var build = await Profiling.XdebugResolver.ResolveAsync(Installer.Http, branch, ct);
+                p?.Report($"Downloading Xdebug {build.Version}...");
+                var bytes = await Profiling.XdebugResolver.FetchAsync(Installer.Http, build.Url, ct);
+                if (bytes.Length < 100_000 || bytes[0] != (byte)'M' || bytes[1] != (byte)'Z')
+                    throw new InvalidOperationException("The file xdebug.org sent isn't a Windows DLL.");
+                var target = Path.Combine(PhpDir(branch), "ext", "php_xdebug.dll");
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                var tmp = target + ".part";
+                await File.WriteAllBytesAsync(tmp, bytes, ct);
+                File.Move(tmp, target, overwrite: true);
+            }
+            EnsureXdebugTrigger();
+            if (!Settings.XdebugBranches.Contains(branch)) Settings.XdebugBranches.Add(branch);
+        }
+        else Settings.XdebugBranches.Remove(branch);
+        Save();
+        PruneXdebugFiles(keep: 30);
+        WritePhpIni(branch);
+        await RestartPhpAsync(branch, p, ct);
+    }
+
+    /// <summary>Turns the browser probe on or off. If profiling is running, the web server and PHP restart so the pages pick the change up.</summary>
+    public async Task SetBrowserProbeAsync(bool on, IProgress<string>? p = null, CancellationToken ct = default)
+    {
+        if (Settings.ProfilingBrowserProbe == on) return;
+        bool Up(string id) => Supervisor.Get(id)?.State is ServiceState.Running or ServiceState.Starting;
+        var webWas = Up(WebServerId);
+        if (webWas && Settings.ProfilingEnabled) await StopServiceAsync(WebServerId);
+        Settings.ProfilingBrowserProbe = on;
+        Save();
+        p?.Report(on ? "Browser probe on" : "Browser probe off");
+        if (webWas && Settings.ProfilingEnabled) await StartServiceAsync(WebServerId, p, ct);
+    }
+
+    /// <summary>Profiler files are big; only the newest few are kept.</summary>
+    public void PruneXdebugFiles(int keep)
+    {
+        try
+        {
+            if (!Directory.Exists(XdebugDir)) return;
+            foreach (var f in new DirectoryInfo(XdebugDir).GetFiles("cachegrind.out.*").OrderByDescending(f => f.LastWriteTimeUtc).Skip(keep))
+                f.Delete();
+        }
+        catch (IOException) { }
     }
 
     // ------------------------------------------------------------ modules / extensions
@@ -608,6 +734,7 @@ public sealed class Stack : IDisposable
         if (Supervisor.Get(WebServerId)?.State is ServiceState.Running or ServiceState.Starting) return;
 
         await EnsureRuntimeAsync(p, ct);
+        if (Settings.ProfilingEnabled) StartProbe();   // before php.ini is written: the collector only adds the probe tag if it is being served
         await Task.WhenAll(
             EnsureActiveAsync(WebServerId, p, ct),
             Installer.EnsureAsync(Catalog.PhpMyAdmin, p, ct),
@@ -632,6 +759,7 @@ public sealed class Stack : IDisposable
         if (id == WebServerId)
         {
             StopTailer();
+            StopProbe();
             await (Supervisor.Get(id)?.StopAsync() ?? Task.CompletedTask);
             await Task.WhenAll(Supervisor.All.Where(s => s.Spec.Id.StartsWith("php-")).Select(s => s.StopAsync()));
         }
@@ -642,6 +770,7 @@ public sealed class Stack : IDisposable
     {
         StopDbProxy();
         StopTailer();
+        StopProbe();
         return Supervisor.StopAllAsync();
     }
 
@@ -661,11 +790,28 @@ public sealed class Stack : IDisposable
     {
         StopTailer();
         try { File.Delete(ProfileLogPath); } catch { /* still in use: the tailer starts at the end anyway */ }
+        try { File.Delete(PhpProfileLogPath); } catch { }
         _tailer = new Profiling.AccessLogTailer(ProfileLogPath, Settings.WebServer, Profile);
         _tailer.Start();
+        _phpTailer = new Profiling.PhpLogTailer(PhpProfileLogPath, Profile);
+        _phpTailer.Start();
     }
 
-    void StopTailer() { _tailer?.Dispose(); _tailer = null; }
+    /// <summary>Reads whatever PHP has logged since the last look (the tailers also poll once a second).</summary>
+    public void PollProfileLogs() { _tailer?.PollOnce(); _phpTailer?.PollOnce(); }
+
+    /// <summary>Starts the browser probe's local server. If its port is taken, profiling simply runs without the browser probe.</summary>
+    void StartProbe()
+    {
+        StopProbe();
+        if (!Settings.ProfilingEnabled || !Settings.ProfilingBrowserProbe) return;
+        var probe = new Profiling.ProbeServer(Profile, Settings.ProbePort, Settings.Tld);
+        if (probe.TryStart()) _probe = probe; else probe.Dispose();
+    }
+
+    void StopProbe() { _probe?.Dispose(); _probe = null; }
+
+    void StopTailer() { _tailer?.Dispose(); _tailer = null; _phpTailer?.Dispose(); _phpTailer = null; }
 
     /// <summary>
     /// Switching profiling moves MariaDB's port and changes the web server's logging, so whatever was running
@@ -721,12 +867,12 @@ public sealed class Stack : IDisposable
             var fcgi = Path.Combine(prefix, "fastcgi_params");
             File.WriteAllText(fcgi, ConfigWriter.FastCgiParams);
             File.WriteAllText(Path.Combine(prefix, "nginx.conf"),
-                ConfigWriter.Nginx(Settings, specs, Installer.DirOf(ActivePkg("nginx")), prefix, fcgi, Settings.ProfilingEnabled, defaultRoot));
+                ConfigWriter.Nginx(Settings, specs, Installer.DirOf(ActivePkg("nginx")), prefix, fcgi, Settings.ProfilingEnabled, defaultRoot, BrowserProbeActive));
         }
         else
         {
             File.WriteAllText(Path.Combine(prefix, "httpd.conf"),
-                ConfigWriter.Apache(Settings, specs, Installer.DirOf(ActivePkg("apache")), prefix, Settings.ProfilingEnabled, ApacheOptionalModules(), defaultRoot));
+                ConfigWriter.Apache(Settings, specs, Installer.DirOf(ActivePkg("apache")), prefix, Settings.ProfilingEnabled, ApacheOptionalModules(), defaultRoot, BrowserProbeActive));
         }
         WritePhpMyAdminConfig();
     }
@@ -822,6 +968,7 @@ public sealed class Stack : IDisposable
     {
         StopDbProxy();
         StopTailer();
+        StopProbe();
         Supervisor.Dispose();
     }
 }

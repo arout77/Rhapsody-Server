@@ -126,6 +126,37 @@ Everything lives in `%LOCALAPPDATA%\RhapsodyServer` (override: `RHAPSODY_SERVER_
 - The page never sends a path. `POST /api/open` takes only a place (`sites`, `site` + name, `data`, `logs`) and the app picks the
   folder, so a request can't open or launch anything else. Folders open in Windows Explorer.
 
+## Profiler
+
+Turn on **Profiling** on the dashboard's Profiler page and every page or API call that goes through your sites is recorded, with the
+SQL it ran. For PHP sites each request's SQL is matched exactly (by the PHP worker that ran it), not by time. Everything stays on this
+computer, and the last few hundred requests are kept in memory.
+
+The **Tools** tab adds three optional extras:
+
+- **Request details**: PHP time, peak memory and files loaded for each request, and a `Server-Timing` header you can see in your
+  browser's dev tools. A small PHP script (`auto_prepend_file`, set in the generated `php.ini`) collects this.
+- **Browser timings (Web Vitals)**: while profiling is on, a small script is added to the HTML pages your PHP sites serve (never to
+  API calls or downloads). It reports TTFB, FCP, LCP, layout shift, load time and size back to the app through your site's own
+  address (`/__rs/`), and shows them with good / needs-work / poor colours on each request. Turn it off if you don't want a
+  script added to your pages. It uses local port 7767 (`ProbePort`) and quietly stays off if that port is busy.
+- **Xdebug profiler**: turn it on per PHP version (PHP 7.4 or newer; Rhapsody Server downloads the right Xdebug DLL from xdebug.org
+  the first time). Xdebug then profiles only requests that carry a secret cookie, so normal browsing isn't slowed. Press
+  **Profile with Xdebug** on a GET request to load it again with the profiler on and see the costliest PHP functions. The
+  cachegrind files are saved under the data folder (`xdebug`) and open in QCacheGrind, PhpStorm or webgrind; the newest 30 are kept.
+- **Lighthouse**: scores and main timings for one of your sites. It isn't bundled: it needs Node.js (it runs through `npx`) and
+  Chrome, Edge or Brave on this PC. Reports are saved as HTML in the data folder (`lighthouse`); the newest 10 are kept.
+
+### Template hints
+
+Switch on **Profiler → Tools → Template hints** for a site and every part of its pages gets a dashed border and a label naming the template file that produced it, with the render time. Click a label to copy the path. Tick *blocks* to mark Twig blocks as well as whole templates.
+
+It needs profiling and browser timings on (the overlay is loaded by the timings script) and takes effect on the next page load, with no restart. The collector sets `RHAPSODY_TEMPLATE_HINTS` for the chosen sites; the framework side lives in `framework/rhapsody-core/src/Twig` (a Twig extension that writes `<!--rs:tpl {...}-->` marker comments) and only activates when the app runs with `APP_ENV=development`. Install it by copying that folder into rhapsody-core and adding one line after `$twig = new Environment(...)` in `src/bootstrap.php`:
+
+```php
+\Rhapsody\Core\Twig\TemplateHintsExtension::register($twig, $isDevelopment);
+```
+
 ## AI help (optional, off by default)
 
 Three features share one setup, done on the dashboard's **AI help** page:

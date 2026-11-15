@@ -231,6 +231,9 @@ public sealed class DashboardServer : IDisposable
                     return;
                 }
 
+                case ("GET", "profile") when a2 == "tools":
+                    await SendAsync(res, 200, _backend.GetProfilerTools());
+                    return;
                 case ("GET", "profile"):
                 {
                     var pfPage = int.TryParse(req.QueryString["page"], out var pfPg) ? pfPg : 1;
@@ -252,6 +255,37 @@ public sealed class DashboardServer : IDisposable
                 case ("POST", "profile") when a2 == "disable":
                     await Reply(res, await RunOp("Turning profiling off", (p, ct) => _backend.SetProfilingAsync(false, p, ct)));
                     return;
+
+                case ("POST", "profile") when a2 == "xdebug":
+                {
+                    var b = await Body<XdebugToggleRequest>(req);
+                    await Reply(res, await RunOp(b.On ? $"Turning Xdebug on for PHP {b.Branch}" : $"Turning Xdebug off for PHP {b.Branch}",
+                        (p, ct) => _backend.SetXdebugAsync(b.Branch, b.On, p, ct)));
+                    return;
+                }
+                case ("POST", "profile") when a2 == "browser-probe":
+                {
+                    var b = await Body<BrowserProbeRequest>(req);
+                    await Reply(res, await RunOp(b.On ? "Turning the browser probe on" : "Turning the browser probe off",
+                        (p, ct) => _backend.SetBrowserProbeAsync(b.On, p, ct)));
+                    return;
+                }
+                case ("POST", "profile") when a2 == "requests" && a3 != "" && seg.Length > 4 && seg[4] == "xdebug" && long.TryParse(a3, out var xdId):
+                    await SendAsync(res, 200, await _backend.ProfileRequestWithXdebugAsync(xdId, _cts.Token));
+                    return;
+                case ("POST", "profile") when a2 == "template-hints":
+                {
+                    var b = await Body<TemplateHintsRequest>(req);
+                    _backend.SetTemplateHints(b);
+                    await SendAsync(res, 200, new { ok = true });
+                    return;
+                }
+                case ("POST", "profile") when a2 == "lighthouse":
+                {
+                    var b = await Body<LighthouseRequest>(req);
+                    await SendAsync(res, 200, await _backend.RunLighthouseAsync(b.Site, _cts.Token));
+                    return;
+                }
 
                 case ("GET", "modules") when a2 == "php":
                     await SendAsync(res, 200, _backend.GetPhpModules(req.QueryString["branch"]));
@@ -354,6 +388,7 @@ public sealed class DashboardServer : IDisposable
         catch (JsonException) { await TrySend(res, 400, Err("Malformed request body")); }
         catch (AiException ex) { await TrySend(res, ex.Busy ? 409 : 400, Err(ex.Message)); }   // a provider problem, worded for the person
         catch (ArgumentException ex) { await TrySend(res, 400, Err(ex.Message)); }              // input the person can fix
+        catch (NotSupportedException ex) { await TrySend(res, 400, Err(ex.Message)); }          // a feature this setup doesn't have
         catch (Exception ex) { await TrySend(res, 500, Err(ex.Message)); }
     }
 
