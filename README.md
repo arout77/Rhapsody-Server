@@ -27,7 +27,7 @@ with a one-click **Rhapsody** project scaffold.
 - **Dashboard** (a local web page, served whenever the tray app is running), one page per job:
   **Services** (start/stop, per-service logs), **Sites** (new Rhapsody site, add an existing folder with a native **Browse…** window,
   per-site PHP), **Versions** (one dropdown per tool: install / switch / remove; Apache can also be updated or imported from a zip),
-  **Modules** (PHP extensions, Apache modules, and your `php.ini`), **Logs**, **Profiler**, **Ask** (an AI assistant that investigates
+  **Modules** (PHP extensions, Apache modules, and your `php.ini`), **Logs**, **Profiler**, **Ask AI** (an assistant that investigates
   your sites), **AI help** (set up the provider) and **Help**. Light, dark or follow-the-system theme.
   Default address `http://localhost:7766`
   (`127.0.0.1:7766` still works); bookmark it. If the app is quit the browser can't connect; `rhapsody://open` starts it again. The tray's "Open dashboard" supplies the access key the first time.
@@ -58,6 +58,27 @@ hosts entry, then reloads the web server.
 - **Composer's install scripts** (such as the Phinx migrations) only run once `.env` holds the real database credentials, so they
   connect as the right user instead of failing with "access denied".
 - The site is served from the project root (Rhapsody's `index.php` is there), see "Sites and the public folder".
+- **Setup options.** The dialog has an optional **Set up** list, run once the project exists: authentication tables (`auth:install`),
+  the job queue (`queue:install --migrate`), React and Vite (`react:install`), pre-built service proxies (`build:proxies`, on by
+  default) and a warmed template cache (`app:cache-warm`). They run after the services are up. The site is already working by then,
+  so an option that fails is reported and the rest carry on.
+
+### Rhapsody updates
+
+The **Sites** page lists Rhapsody sites apart from other sites. Each Rhapsody site shows its installed `arout/rhapsody-core` version (read from `vendor/composer/installed.json`) and whether a newer stable release is on Packagist, checked when the page opens (cached ten minutes) and on **Check for updates**. **Update to x.y.z** runs `composer update arout/rhapsody-core --with-dependencies` in the project with the site's PHP; the project's own `composer.json` constraint decides how far it can move, and if Composer keeps the old version you're told why. Dev branches are never called out of date.
+
+### Rhapsody commands
+
+On **Sites**, a Rhapsody site (one with the `rhapsody` launcher and `vendor/arout/rhapsody-core`) gets a **Commands** button: one
+click runs `php rhapsody ...` in the project folder with that site's PHP and shows the output. They are grouped as Database
+(`migrate`, `auth:install`, `queue:install`), Speed and caches (`cache:clear`, `app:cache-warm`, `build:proxies`, `route:cache`,
+`route:clear`), Project (`env:sync`, `app:check-version`, `module:list`, `module:health`, `react:install`), Queue (`queue:work
+--stop-when-empty`, `queue:failed`, `queue:retry all`) and Generate (`make:controller`, `make:model`, `make:migration`,
+`make:middleware`, `make:event`, `make:listener`, which take a name).
+
+The page can only pick from this fixed list; the server builds the command line, and a name must be a plain class name. Commands that
+ask for confirmation (`queue:flush`, `module:uninstall`) are left out. Database commands need MariaDB running. Rhapsody's runner exits
+with 0 even when a command fails, so the result is judged from the output as well as the exit code.
 
 ## PHP settings (php.ini)
 
@@ -115,7 +136,7 @@ Everything lives in `%LOCALAPPDATA%\RhapsodyServer` (override: `RHAPSODY_SERVER_
 
 ## Help, and finding your code
 
-- The dashboard's **Help** page says where everything is stored, each with **Open folder** and **Copy path**: the folder new sites
+- The dashboard's **Help** is an index of topics, each on its own page (`#/help/<topic>`): getting started, the Rhapsody framework (scaffold, setup options, Commands, template hints), sites and domains, services/versions/PHP settings, logs and profiling, AI help, the tray and appearance, where everything is stored, and troubleshooting. The storage topic says where everything is stored, each with **Open folder** and **Copy path**: the folder new sites
   are created in (default `%USERPROFILE%\Sites`), every site's own folder, the app's data folder (settings, certificates,
   downloads, databases in `data\mariadb`) and the logs. It also has a short getting-started list and answers to the usual problems.
 - The **Sites** page shows where new sites are saved, with an Open folder button, plus one per site. The New Rhapsody site window

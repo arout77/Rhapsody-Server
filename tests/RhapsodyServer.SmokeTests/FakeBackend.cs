@@ -65,7 +65,7 @@ sealed class FakeBackend : IDashboardBackend
     readonly Dictionary<string, string> _st = new() { ["nginx"] = "stopped", ["mariadb"] = "stopped", ["redis"] = "stopped", ["mailpit"] = "stopped" };
     readonly List<SiteDto> _sites = new()
     {
-        new("rhapsody", "rhapsody.test", "https://rhapsody.test", @"C:\Users\andrew\Sites\rhapsody", "", "8.3", true),
+        new("rhapsody", "rhapsody.test", "https://rhapsody.test", @"C:\Users\andrew\Sites\rhapsody", "", "8.3", true, true),
         new("iwf", "iwf.test", "https://iwf.test", @"C:\Users\andrew\Sites\iwf", "public", "8.1", true),
     };
     string _web = "Nginx";
@@ -325,6 +325,33 @@ sealed class FakeBackend : IDashboardBackend
     public async Task RemoveSiteAsync(string name, IProgress<string> p, CancellationToken ct)
     { await Step(p, "Updating config..."); lock (_g) _sites.RemoveAll(s => s.Name == name); Fire(); }
 
+    /// <summary>Rhapsody commands the page asked to run: site, command id, name. The command line is built from the real fixed list, so the test proves the page can't choose one.</summary>
+    public readonly List<(string Site, string Command, string? Name)> Ran = new();
+    public Task<RhapsodyCommandResultDto> RunRhapsodyCommandAsync(string site, RhapsodyCommandRequest req, CancellationToken ct)
+    {
+        lock (_g) if (!_sites.Any(x => x.Name == site)) throw new ArgumentException($"There is no site called \"{site}\".");
+        var cmd = RhapsodyCli.Find(req.Command ?? "") ?? throw new ArgumentException("That isn't a Rhapsody command this page can run.");
+        var args = cmd.Args.ToList();
+        if (cmd.NeedsName) args.Add(RhapsodyCli.CheckName(req.Name));
+        Ran.Add((site, cmd.Id, req.Name));
+        return Task.FromResult(new RhapsodyCommandResultDto(true, "php rhapsody " + string.Join(' ', args), "Done."));
+    }
+
+    public readonly List<(string Site, bool Force)> UpdateChecks = new();
+    public readonly List<string> Updated = new();
+    public Task<CoreUpdateInfo> CheckRhapsodyUpdateAsync(string site, bool force, CancellationToken ct)
+    {
+        lock (_g) if (!_sites.Any(x => x.Name == site)) throw new ArgumentException($"There is no site called \"{site}\".");
+        UpdateChecks.Add((site, force));
+        return Task.FromResult(RhapsodyUpdates.Evaluate("1.4.0", "1.5.0", "^1.4"));
+    }
+    public async Task UpdateRhapsodyAsync(string site, IProgress<string> p, CancellationToken ct)
+    {
+        lock (_g) if (!_sites.Any(x => x.Name == site)) throw new ArgumentException($"There is no site called \"{site}\".");
+        await Step(p, "Running composer update...");
+        Updated.Add(site);
+    }
+
     public ScaffoldRequestDto? LastScaffold;
     public async Task ScaffoldAsync(ScaffoldRequestDto r, IProgress<string> p, CancellationToken ct)
     {
@@ -333,7 +360,7 @@ sealed class FakeBackend : IDashboardBackend
         if (name == "fail") throw new InvalidOperationException("composer create-project failed: package arout/rhapsody-app was not found");
         await Step(p, $"Creating database {name.Replace('-', '_')}...");
         await Step(p, "Registering site...");
-        lock (_g) _sites.Add(new(name, $"{name}.test", $"https://{name}.test", $@"C:\Users\andrew\Sites\{name}", "", php, true));
+        lock (_g) _sites.Add(new(name, $"{name}.test", $"https://{name}.test", $@"C:\Users\andrew\Sites\{name}", "", php, true, true));
         Fire();
     }
 

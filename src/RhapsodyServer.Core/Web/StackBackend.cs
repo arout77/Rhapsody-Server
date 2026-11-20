@@ -67,14 +67,15 @@ public sealed class StackBackend : IDashboardBackend, IDevContext
         }
 
         var sites = st.Sites.Select(x => new SiteDto(x.Name, _s.Domain(x.Name),
-            $"{(x.Https ? "https" : "http")}://{_s.Domain(x.Name)}", x.Root, x.PublicDir, x.Php, x.Https)).ToArray();
+            $"{(x.Https ? "https" : "http")}://{_s.Domain(x.Name)}", x.Root, x.PublicDir, x.Php, x.Https, RhapsodyCli.IsRhapsodyProject(x.Root),
+            RhapsodyCli.IsRhapsodyProject(x.Root) ? RhapsodyUpdates.InstalledVersion(x.Root) : null)).ToArray();
 
         var settings = new SettingsDto(st.Tld, st.WebServer.ToString(), st.DefaultPhp, PhpResolver.SupportedBranches,
             st.HttpPort, st.HttpsPort, st.MariaDbPort, st.RedisPort, st.SmtpPort, st.MailUiPort, st.ResolveSitesRoot(),
             _s.Paths.Root, _s.Paths.Logs,
             _s.InstalledPhpBranches().ToDictionary(b => b, b => _s.InstalledPkg("php", b).Version), RhapsodyScaffold.MinPhp);
 
-        return new DashboardState(services.ToArray(), sites, settings, HostsFile.CanWrite(), OperatingSystem.IsWindows(), CanPickFolder, _opener.CanOpen);
+        return new DashboardState(services.ToArray(), sites, settings, HostsFile.CanWrite(), OperatingSystem.IsWindows(), CanPickFolder, _opener.CanOpen, RhapsodyTools);
 
         string Of(string id) => StateName(_s.Supervisor.Get(id)?.State ?? ServiceState.Stopped);
     }
@@ -372,7 +373,72 @@ public sealed class StackBackend : IDashboardBackend, IDevContext
 
     public Task ScaffoldAsync(ScaffoldRequestDto r, IProgress<string> p, CancellationToken ct) => Run("Creating Rhapsody site", async () =>
         { await RhapsodyScaffold.RunAsync(_s, new ScaffoldRequest((r.Name ?? "").Trim().ToLowerInvariant(), r.Php,
-            DbName: r.DbName, DbUser: r.DbUser, DbPass: r.DbPass), p, ct); });
+            DbName: r.DbName, DbUser: r.DbUser, DbPass: r.DbPass, Steps: r.Steps), p, ct); });
+
+    static readonly RhapsodyToolsDto RhapsodyTools = new(
+        RhapsodyCli.ScaffoldSteps.Select(x => new ScaffoldStepDto(x.Id, x.Label, x.Description, x.Default)).ToArray(),
+        RhapsodyCli.Groups.Select(g => new CommandGroupDto(g.Title,
+            g.Commands.Select(c => new CommandDto(c.Id, c.Label, c.Description, c.NeedsName, c.NameHint)).ToArray())).ToArray());
+
+    /// <summary>
+    /// Not an exclusive operation (like Test): it only runs a command in the site's own folder, so the rest of the dashboard stays usable.
+    /// The page names a command from the fixed list; the command line is built here.
+    /// </summary>
+    public async Task<RhapsodyCommandResultDto> RunRhapsodyCommandAsync(string siteName, RhapsodyCommandRequest req, CancellationToken ct)
+    {
+        var site = _s.Settings.Sites.FirstOrDefault(x => x.Name.Equals(siteName, StringComparison.OrdinalIgnoreCase))
+            ?? throw new ArgumentException($"There is no site called \"{siteName}\".");
+        var cmd = RhapsodyCli.Find(req.Command ?? "") ?? throw new ArgumentException("That isn't a Rhapsody command this page can run.");
+        if (!RhapsodyCli.IsRhapsodyProject(site.Root))
+            throw new ArgumentException($"{_s.Domain(site.Name)} doesn't look like a Rhapsody project (no rhapsody file or vendor/arout/rhapsody-core in {site.Root}).");
+        if (!_s.IsSeriesInstalled("php", site.Php))
+            throw new ArgumentException($"PHP {site.Php} isn't installed. Install it on the Versions page, or switch this site to another PHP.");
+        if (cmd.NeedsDb && _s.Supervisor.Get("mariadb")?.State != ServiceState.Running)
+            throw new ArgumentException("This command uses the database. Start MariaDB on the Services page first.");
+
+        var args = cmd.Args.ToList();
+        if (cmd.NeedsName) args.Add(RhapsodyCli.CheckName(req.Name));
+        var line = "php rhapsody " + string.Join(' ', args);
+        var run = await RhapsodyCli.RunAsync(_s, site.Root, site.Php, args, ct: ct);
+        return new RhapsodyCommandResultDto(run.Ok, line, run.Output.Length == 0 ? "(the command printed nothing)" : run.Output);
+    }
+
+    RhapsodyServer.Core.Site RhapsodySite(string siteName)
+    {
+        var site = _s.Settings.Sites.FirstOrDefault(x => x.Name.Equals(siteName, StringComparison.OrdinalIgnoreCase))
+            ?? throw new ArgumentException($"There is no site called \"{siteName}\".");
+        if (!RhapsodyCli.IsRhapsodyProject(site.Root))
+            throw new ArgumentException($"{_s.Domain(site.Name)} doesn't look like a Rhapsody project (no rhapsody file or vendor/arout/rhapsody-core in {site.Root}).");
+        return site;
+    }
+
+    public Task<CoreUpdateInfo> CheckRhapsodyUpdateAsync(string siteName, bool force, CancellationToken ct) =>
+        RhapsodyUpdates.CheckAsync(_s.Installer.Http, RhapsodySite(siteName).Root, force, ct);
+
+    public Task UpdateRhapsodyAsync(string siteName, IProgress<string> p, CancellationToken ct)
+    {
+        var site = RhapsodySite(siteName);
+        if (!_s.IsSeriesInstalled("php", site.Php))
+            throw new ArgumentException($"PHP {site.Php} isn't installed. Install it on the Versions page, or switch this site to another PHP.");
+        return Run($"Updating {siteName}", async () =>
+        {
+            var before = RhapsodyUpdates.InstalledVersion(site.Root);
+            await _s.Installer.EnsureAsync(Catalog.Composer, p, ct);
+            p.Report("Running composer update for " + RhapsodyUpdates.Package + "...");
+            var r = await ProcessRunner.RunAsync(_s.PhpExe(site.Php),
+                new[] { _s.Installer.PathOf(Catalog.Composer), "update", RhapsodyUpdates.Package, "--with-dependencies", "--no-interaction" },
+                site.Root, _s.PhpEnv(site.Php, forComposer: true), TimeSpan.FromMinutes(10), ct);
+            if (!r.Ok) throw new InvalidOperationException($"composer update failed (exit code {r.ExitCode}):\n" + RhapsodyCli.CleanOutput(r.Output));
+            var after = RhapsodyUpdates.InstalledVersion(site.Root);
+            if (after == before)
+            {
+                var limit = RhapsodyUpdates.Constraint(site.Root);
+                throw new InvalidOperationException("Composer kept " + RhapsodyUpdates.Package + " at " + (after ?? "its current version")
+                    + (limit != null ? $", because this project's composer.json asks for {limit}. Change that line in composer.json to allow the newer release, then update again." : "."));
+            }
+            p.Report($"Now on {after}.");
+        });
+    }
 
     public Task SwitchWebServerAsync(string kind, IProgress<string> p, CancellationToken ct) => Run("Switching web server", () =>
         _s.SwitchWebServerAsync(Enum.Parse<WebServerKind>(kind, ignoreCase: true), p, ct));

@@ -18,6 +18,8 @@ sealed class TrayContext : ApplicationContext
     readonly Control _ui = new();          // hidden control, only used to marshal calls onto the UI thread
     readonly IProgress<string> _progress;
     DashboardServer? _dash;
+    TrayTheme? _theme;                     // the menu's look; rebuilt when Windows switches between light and dark
+    TrayIcons? _icons;
 
     bool Busy => _stack.CurrentOperation != null;
 
@@ -72,31 +74,53 @@ sealed class TrayContext : ApplicationContext
     }
 
     // ------------------------------------------------------------------ menu
+    /// <summary>Applies the Windows light or dark look to the menu, and makes the icons for it. Cheap when nothing changed.</summary>
+    (TrayTheme Theme, TrayIcons Icons) Style()
+    {
+        var now = TrayTheme.Current();
+        if (_theme == null || _icons == null || _theme.Dark != now.Dark || _menu.DeviceDpi != _iconDpi)
+        {
+            _icons?.Dispose();
+            _theme = now;
+            _iconDpi = _menu.DeviceDpi;
+            _icons = new TrayIcons(now, _iconDpi);
+            _menu.Renderer = new TrayRenderer(now);
+            _menu.BackColor = now.Background;
+        }
+        return (_theme, _icons);
+    }
+    int _iconDpi;
+
     void Rebuild()
     {
         _menu.Items.Clear();
+        var (theme, icons) = Style();
         var running = _stack.Supervisor.All.Any(s => s.State == ServiceState.Running);
 
         var open = Plain("Open dashboard", () => OpenDashboard());   // never blocked by a running operation: you may want to watch it
         open.Font = new Font(open.Font, FontStyle.Bold);
+        open.Image = icons.Dashboard;
+        open.Tag = theme.Accent;
         _menu.Items.Add(new ToolStripSeparator());
 
-        Item("Start all", "Starting everything", () => _stack.StartAllAsync(_progress), !Busy);
-        Item("Stop all", "Stopping everything", () => _stack.StopAllAsync(), !Busy && running);
+        Item("Start all", "Starting everything", () => _stack.StartAllAsync(_progress), !Busy).Image = icons.Play;
+        Item("Stop all", "Stopping everything", () => _stack.StopAllAsync(), !Busy && running).Image = icons.StopSq;
         _menu.Items.Add(new ToolStripSeparator());
 
         foreach (var id in new[] { _stack.WebServerId }.Concat(Stack.CoreServiceIds))
         {
             var state = _stack.Supervisor.Get(id)?.State ?? ServiceState.Stopped;
             var on = state is ServiceState.Running or ServiceState.Starting;
-            Item($"{Dot(state)}  {ServiceLabel(id)}", on ? $"Stopping {id}" : $"Starting {id}",
-                () => on ? _stack.StopServiceAsync(id) : _stack.StartServiceAsync(id, _progress), !Busy);
+            Item(ServiceLabel(id), on ? $"Stopping {id}" : $"Starting {id}",
+                () => on ? _stack.StopServiceAsync(id) : _stack.StartServiceAsync(id, _progress), !Busy).Image = icons.Status(state);
         }
 
         if (_stack.Settings.Sites.Count > 0)
         {
             _menu.Items.Add(new ToolStripSeparator());
-            var sites = new ToolStripMenuItem("Sites");
+            var sites = new ToolStripMenuItem("Sites") { Image = icons.Globe };
+            sites.DropDown.Renderer = _menu.Renderer;
+            sites.DropDown.BackColor = theme.Background;
             foreach (var site in _stack.Settings.Sites.ToArray())
             {
                 var url = $"{(site.Https ? "https" : "http")}://{_stack.Domain(site.Name)}";
@@ -108,10 +132,10 @@ sealed class TrayContext : ApplicationContext
         }
 
         _menu.Items.Add(new ToolStripSeparator());
-        Plain("Open sites folder", OpenSitesFolder);
-        Plain("Edit php.ini", EditPhpIni);
-        Plain("Help", () => OpenDashboard("help"));
-        Plain("Quit", () => _ = Quit());
+        Plain("Open sites folder", OpenSitesFolder).Image = icons.Folder;
+        Plain("Edit php.ini", EditPhpIni).Image = icons.Edit;
+        Plain("Help", () => OpenDashboard("help")).Image = icons.Help;
+        Plain("Quit", () => _ = Quit()).Image = icons.Power;
     }
 
     /// <summary>The php.ini of the default PHP, in the person's editor (Notepad if nothing is set up for .ini files).</summary>
@@ -149,6 +173,7 @@ sealed class TrayContext : ApplicationContext
         _dash?.Dispose();
         await _stack.StopAllAsync();
         _icon.Visible = false;
+        _icons?.Dispose();
         _stack.Dispose();
         ExitThread();
     }
@@ -193,7 +218,6 @@ sealed class TrayContext : ApplicationContext
 
     void Balloon(string text, ToolTipIcon icon) => _icon.ShowBalloonTip(6000, "Rhapsody Server", Trunc(text, 250), icon);
     static string Trunc(string s, int max = 63) => s.Length <= max ? s : s[..(max - 1)] + "…";
-    static string Dot(ServiceState s) => s switch { ServiceState.Running => "●", ServiceState.Starting => "◐", ServiceState.Crashed => "✖", _ => "○" };
 
     string ServiceLabel(string id) => id switch
     {

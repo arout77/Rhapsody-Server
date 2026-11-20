@@ -5,8 +5,9 @@ namespace RhapsodyServer.Core;
 /// <param name="DbName">Database to create. Blank = the site name with underscores.</param>
 /// <param name="DbUser">Database user. Blank = root, which has no password in this stack.</param>
 /// <param name="DbPass">Password for a non-root user.</param>
+/// <param name="Steps">Ids from <see cref="RhapsodyCli.ScaffoldSteps"/> to run once the project exists. Null = the ones switched on by default; empty = none.</param>
 public sealed record ScaffoldRequest(string Name, string Php, string? ParentDir = null, string? Package = null,
-    string? DbName = null, string? DbUser = null, string? DbPass = null);
+    string? DbName = null, string? DbUser = null, string? DbPass = null, IReadOnlyList<string>? Steps = null);
 
 /// <summary>
 /// One action: composer create-project, database, .env, vhost, certificate, hosts entry, reload.
@@ -133,6 +134,15 @@ public static class RhapsodyScaffold
         return sql + " FLUSH PRIVILEGES;";
     }
 
+    /// <summary>The steps to run, in catalog order and without repeats. Throws ArgumentException for an id that isn't one.</summary>
+    public static IReadOnlyList<ScaffoldStep> ResolveSteps(IReadOnlyList<string>? ids)
+    {
+        if (ids == null) return RhapsodyCli.ScaffoldSteps.Where(x => x.Default).ToList();
+        var unknown = ids.FirstOrDefault(i => RhapsodyCli.ScaffoldSteps.All(x => x.Id != i));
+        if (unknown != null) throw new ArgumentException($"\"{unknown}\" isn't a setup option.");
+        return RhapsodyCli.ScaffoldSteps.Where(x => ids.Contains(x.Id)).ToList();
+    }
+
     /// <summary>Checks the optional database fields and fills in the defaults.</summary>
     public static (string Db, string User, string Pass) ResolveDb(ScaffoldRequest req)
     {
@@ -170,6 +180,7 @@ public static class RhapsodyScaffold
         if (!Stack.NameRx.IsMatch(req.Name))
             throw new ArgumentException("Site name: lowercase letters, digits and hyphens only (e.g. 'my-app').");
         var (db, dbUser, dbPass) = ResolveDb(req);
+        var steps = ResolveSteps(req.Steps);   // checked now, so a bad id can't leave a half-made site behind
 
         var parent = req.ParentDir ?? s.ResolveSitesRoot();
         var dir = Path.Combine(parent, req.Name);
@@ -250,6 +261,25 @@ public static class RhapsodyScaffold
 
         p?.Report("Starting services...");
         await stack.StartAllAsync(p, ct);
+
+        // The options the person ticked. The site already works, so a step that fails is reported and the rest carry on.
+        var needAttention = new List<string>();
+        foreach (var step in steps)
+        {
+            p?.Report($"{step.Label}...");
+            try
+            {
+                var run = await RhapsodyCli.RunAsync(stack, dir, req.Php, step.Args, values, TimeSpan.FromMinutes(5), ct);
+                if (!run.Ok) { needAttention.Add(step.Label); p?.Report($"{step.Label} didn't finish:\n{run.Output}"); }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                needAttention.Add(step.Label);
+                p?.Report($"{step.Label} didn't finish: {ex.Message}");
+            }
+        }
+        if (needAttention.Count > 0)
+            p?.Report($"The site is ready, but these setup options need another look: {string.Join(", ", needAttention)}. You can run them again from Sites, Commands.");
 
         p?.Report("Registering site...");
         // Rhapsody's front controller (index.php) is in the project root, not in public/, so the docroot is the root.

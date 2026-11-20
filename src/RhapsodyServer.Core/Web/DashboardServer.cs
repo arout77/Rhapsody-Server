@@ -184,6 +184,18 @@ public sealed class DashboardServer : IDisposable
                     await Reply(res, await RunOp($"Switching {a2} to PHP {b.Php}", (p, ct) => _backend.SetSitePhpAsync(a2, b.Php, p, ct)));
                     return;
                 }
+                case ("POST", "sites") when a3 == "rhapsody" && a2 != "":
+                {
+                    var b = await Body<RhapsodyCommandRequest>(req);
+                    await SendAsync(res, 200, await _backend.RunRhapsodyCommandAsync(a2, b, _cts.Token));
+                    return;
+                }
+                case ("POST", "sites") when a3 == "updates" && a2 != "":
+                    await SendAsync(res, 200, await _backend.CheckRhapsodyUpdateAsync(a2, req.Url?.Query.Contains("force=1") == true, _cts.Token));
+                    return;
+                case ("POST", "sites") when a3 == "update" && a2 != "":
+                    await Reply(res, await RunOp($"Updating {a2}", (p, ct) => _backend.UpdateRhapsodyAsync(a2, p, ct)));
+                    return;
                 case ("POST", "sites") when a3 == "check" && a2 != "":
                     await SendAsync(res, 200, new { report = await _backend.CheckSiteAsync(a2, _cts.Token) });
                     return;
@@ -463,7 +475,7 @@ public sealed class DashboardServer : IDisposable
     }
 
     // ------------------------------------------------------------------ assets
-    static readonly HashSet<string> Assets = new() { "logo.png", "icon.png" };
+    static readonly HashSet<string> Assets = new() { "logo.png", "logo-light.png", "icon.png" };
 
     /// <summary>The logo and icon, embedded in the app. A fixed allow-list, so a path can never reach anything else.</summary>
     static async Task SendAssetAsync(HttpListenerResponse res, string name)

@@ -989,6 +989,64 @@ await Check("probe server: serves the script and takes beacons end-to-end; wrong
     var other = new ProbeServer(store, port, "test");
     True(!other.TryStart(), "a busy port is reported, not thrown"); other.Dispose();
 });
+CheckS("rhapsody commands: the fixed list is consistent, and only it can be run", () =>
+{
+    var all = RhapsodyCli.Groups.SelectMany(g => g.Commands).ToList();
+    Eq(all.Count, all.Select(c => c.Id).Distinct().Count());
+    True(all.Any(c => c.Id == "build:proxies" && c.Args.SequenceEqual(new[] { "build:proxies" })), "build:proxies is offered");
+    True(all.Where(c => c.Id.StartsWith("make:")).All(c => c.NeedsName) && all.Where(c => !c.Id.StartsWith("make:")).All(c => !c.NeedsName), "only the generators take a name");
+    True(all.All(c => c.Args.Length > 0 && !c.Args[0].StartsWith('-') && c.Args.All(a => a.Length > 0 && a.All(ch => !char.IsWhiteSpace(ch)))), "fixed, space-free arguments");
+    True(RhapsodyCli.Find("migrate") != null && RhapsodyCli.Find("rm -rf /") == null && RhapsodyCli.Find("") == null && RhapsodyCli.Find("MIGRATE") == null);
+    // The commands that wait on a person (they ask "are you sure?") are not on the list.
+    True(all.All(c => c.Id != "queue:flush" && c.Id != "module:uninstall"), "no prompting commands");
+});
+CheckS("rhapsody commands: names for the generators are checked", () =>
+{
+    foreach (var ok in new[] { "UserController", "Post", "Admin/UserController", "Admin\\Post", "create_posts_table" })
+        Eq(ok, RhapsodyCli.CheckName("  " + ok + " "));
+    foreach (var bad in new[] { "", "  ", null, "../x", "..", "-f", "--help", "a b", "A;rm", "1abc", "a//b", "a/", "x\\\\y", "a&b", "a`b", new string('a', 81) })
+    {
+        var threw = false; try { RhapsodyCli.CheckName(bad); } catch (ArgumentException) { threw = true; }
+        True(threw, "rejects [" + bad + "]");
+    }
+});
+CheckS("rhapsody commands: output is cleaned, and failure is spotted even when the exit code is 0", () =>
+{
+    Eq("Done.\nNext", RhapsodyCli.CleanOutput("\u001b[32mDone.\u001b[0m\r\nNext\r\n"));
+    True(RhapsodyCli.CleanOutput(new string('x', RhapsodyCli.MaxOutput + 500)).Length < RhapsodyCli.MaxOutput + 60, "long output is capped");
+    True(RhapsodyCli.Succeeded(0, "Building lazy proxies...\nDone. Generated 3 proxies."));
+    True(!RhapsodyCli.Succeeded(1, "anything"), "non-zero exit");
+    True(!RhapsodyCli.Succeeded(0, "[Runtime Error] SQLSTATE[HY000] [1045] Access denied"), "the runner prints this and exits 0");
+    True(!RhapsodyCli.Succeeded(0, "\nRhapsody Framework CLI Engine\nAvailable Commands:\n  cache:clear   Flush"), "an unknown command prints the list");
+    True(!RhapsodyCli.Succeeded(0, "PHP Fatal error:  Uncaught Error: Class X not found"));
+    True(!RhapsodyCli.Succeeded(0, "  [InvalidArgumentException]\n  nope"));
+});
+CheckS("rhapsody commands: a folder counts as a Rhapsody project only with the launcher and the core package", () =>
+{
+    var d = Path.Combine(Path.GetTempPath(), "rs-proj-" + Guid.NewGuid().ToString("N"));
+    try
+    {
+        Directory.CreateDirectory(d);
+        True(!RhapsodyCli.IsRhapsodyProject(d) && !RhapsodyCli.IsRhapsodyProject("") && !RhapsodyCli.IsRhapsodyProject(null));
+        File.WriteAllText(Path.Combine(d, "rhapsody"), "<?php");
+        True(!RhapsodyCli.IsRhapsodyProject(d), "launcher alone is not enough");
+        Directory.CreateDirectory(Path.Combine(d, "vendor", "arout", "rhapsody-core"));
+        True(RhapsodyCli.IsRhapsodyProject(d));
+        True(!RhapsodyCli.IsRhapsodyProject(Path.Combine(d, "missing")));
+    }
+    finally { try { Directory.Delete(d, true); } catch { } }
+});
+CheckS("scaffold options: defaults, order, and a bad id is refused before anything is made", () =>
+{
+    Eq("proxies", string.Join(",", RhapsodyScaffold.ResolveSteps(null).Select(x => x.Id)));
+    Eq(0, RhapsodyScaffold.ResolveSteps(Array.Empty<string>()).Count);
+    Eq("auth,queue,proxies", string.Join(",", RhapsodyScaffold.ResolveSteps(new[] { "proxies", "queue", "auth", "auth" }).Select(x => x.Id)));
+    var threw = false; try { RhapsodyScaffold.ResolveSteps(new[] { "auth", "format-disk" }); } catch (ArgumentException e) { threw = e.Message.Contains("format-disk"); }
+    True(threw, "unknown id");
+    var ids = RhapsodyCli.ScaffoldSteps.Select(x => x.Id).ToList(); Eq(ids.Count, ids.Distinct().Count());
+    True(RhapsodyCli.ScaffoldSteps.Single(x => x.Id == "proxies").Args.SequenceEqual(new[] { "build:proxies" }), "build:proxies is a setup option");
+    True(RhapsodyCli.ScaffoldSteps.Single(x => x.Id == "queue").Args.SequenceEqual(new[] { "queue:install", "--migrate" }));
+});
 CheckS("template hints: the collector flags only the listed hosts, and loads the overlay only for them", () =>
 {
     var none = PhpCollectorScript.Generate(@"C:\x.tsv", "k3y", true);
@@ -1362,7 +1420,7 @@ await Check("sites API: blank public folder stays blank (root), a typed folder i
 });
 await Check("branding: logo and icon are served (image/png, no token needed); nothing else under /assets", async () =>
 {
-    foreach (var f in new[] { "logo.png", "icon.png" })
+    foreach (var f in new[] { "logo.png", "logo-light.png", "icon.png" })
     {
         using var r = await http.GetAsync("/assets/" + f);
         Eq(HttpStatusCode.OK, r.StatusCode); Eq("image/png", r.Content.Headers.ContentType!.MediaType);
@@ -2057,6 +2115,71 @@ await Check("site test API: needs the token; returns the report; an unknown site
     Eq(HttpStatusCode.OK, code); True(body.GetProperty("report").GetString()!.Contains("200 OK"));
     var (c2, b2) = await Call(Req(HttpMethod.Post, "/api/sites/gone/check", new { }));
     Eq(HttpStatusCode.BadRequest, c2); True(b2.GetProperty("error").GetString()!.Contains("no site"));
+});
+await Check("rhapsody commands API: needs the token; runs from the list only; unknown site, command or name is a readable 400", async () =>
+{
+    Eq(HttpStatusCode.Unauthorized, (await Call(Req(HttpMethod.Post, "/api/sites/rhapsody/rhapsody", new { command = "cache:clear" }, token: false))).Item1);
+    var (c, b) = await Call(Req(HttpMethod.Post, "/api/sites/rhapsody/rhapsody", new { command = "build:proxies" }));
+    Eq(HttpStatusCode.OK, c); True(b.GetProperty("ok").GetBoolean()); Eq("php rhapsody build:proxies", b.GetProperty("command").GetString());
+    var (c2, b2) = await Call(Req(HttpMethod.Post, "/api/sites/rhapsody/rhapsody", new { command = "make:controller", name = "Admin/UserController" }));
+    Eq(HttpStatusCode.OK, c2); Eq("php rhapsody make:controller Admin/UserController", b2.GetProperty("command").GetString());
+    var (c3, b3) = await Call(Req(HttpMethod.Post, "/api/sites/rhapsody/rhapsody", new { command = "queue:install" }));
+    Eq("php rhapsody queue:install --migrate", b3.GetProperty("command").GetString());
+    var ranBefore = fake.Ran.Count;
+    foreach (var bad in new object[] { new { command = "rm -rf /" }, new { command = "" }, new { command = "make:model" }, new { command = "make:model", name = "../x" }, new { command = "make:model", name = "-f" } })
+    {
+        var (cb, bb) = await Call(Req(HttpMethod.Post, "/api/sites/rhapsody/rhapsody", bad));
+        Eq(HttpStatusCode.BadRequest, cb); True(bb.GetProperty("error").GetString()!.Length > 0);
+    }
+    var (cg, bg) = await Call(Req(HttpMethod.Post, "/api/sites/gone/rhapsody", new { command = "cache:clear" }));
+    Eq(HttpStatusCode.BadRequest, cg); True(bg.GetProperty("error").GetString()!.Contains("no site"));
+    Eq(ranBefore, fake.Ran.Count);   // nothing refused ever reached the runner
+});
+await Check("rhapsody updates: versions are read from vendor and Packagist's metadata, only stable releases count, a dev branch is never 'old'", async () =>
+{
+    var dir = Path.Combine(Path.GetTempPath(), "rs-upd-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(Path.Combine(dir, "vendor", "composer"));
+    try
+    {
+        Eq<string?>(null, RhapsodyUpdates.InstalledVersion(dir));
+        File.WriteAllText(Path.Combine(dir, "vendor", "composer", "installed.json"), "{\"packages\":[{\"name\":\"other/x\",\"version\":\"9.9.9\"},{\"name\":\"arout/rhapsody-core\",\"version\":\"v1.4.2\"}]}");
+        Eq("1.4.2", RhapsodyUpdates.InstalledVersion(dir));
+        File.WriteAllText(Path.Combine(dir, "vendor", "composer", "installed.json"), "[{\"name\":\"arout/rhapsody-core\",\"version\":\"dev-main\"}]");   // Composer 1 layout
+        Eq("dev-main", RhapsodyUpdates.InstalledVersion(dir));
+        File.WriteAllText(Path.Combine(dir, "composer.json"), "{\"require\":{\"arout/rhapsody-core\":\"^1.4\"}}");
+        Eq("^1.4", RhapsodyUpdates.Constraint(dir));
+    }
+    finally { Directory.Delete(dir, true); }
+    var meta = "{\"packages\":{\"arout/rhapsody-core\":[{\"version\":\"1.10.0\"},{\"version\":\"1.9.3\"},{\"version\":\"2.0.0-beta1\"},{\"version\":\"dev-main\"},{\"version\":\"v1.2.0\"}]}}";
+    Eq("1.10.0", RhapsodyUpdates.PickLatestStable(meta));   // 1.10 is newer than 1.9, and the beta and the branch are ignored
+    Eq<string?>(null, RhapsodyUpdates.PickLatestStable("not json"));
+    True(RhapsodyUpdates.Evaluate("1.9.3", "1.10.0", null).UpdateAvailable);
+    True(!RhapsodyUpdates.Evaluate("1.10.0", "1.10.0", null).UpdateAvailable);
+    True(!RhapsodyUpdates.Evaluate("dev-main", "1.10.0", null).UpdateAvailable);
+    True(RhapsodyUpdates.Evaluate(null, "1.10.0", null).Error != null);
+    True(RhapsodyUpdates.Evaluate("1.0.0", null, null).Error != null);
+});
+await Check("rhapsody updates API: needs the token; check and update reach the backend for a known site; unknown site is a readable 400", async () =>
+{
+    Eq(HttpStatusCode.Unauthorized, (await Call(Req(HttpMethod.Post, "/api/sites/rhapsody/updates", null, token: false))).Item1);
+    var (c, b) = await Call(Req(HttpMethod.Post, "/api/sites/rhapsody/updates", null));
+    Eq(HttpStatusCode.OK, c); True(b.GetProperty("updateAvailable").GetBoolean()); Eq("1.5.0", b.GetProperty("latest").GetString()); Eq("1.4.0", b.GetProperty("installed").GetString());
+    await Call(Req(HttpMethod.Post, "/api/sites/rhapsody/updates?force=1", null));
+    True(fake.UpdateChecks.Last().Force);
+    var (cg, bg) = await Call(Req(HttpMethod.Post, "/api/sites/gone/updates", null));
+    Eq(HttpStatusCode.BadRequest, cg); True(bg.GetProperty("error").GetString()!.Contains("no site"));
+    Eq(HttpStatusCode.Unauthorized, (await Call(Req(HttpMethod.Post, "/api/sites/rhapsody/update", null, token: false))).Item1);
+    Eq(HttpStatusCode.OK, (await Call(Req(HttpMethod.Post, "/api/sites/rhapsody/update", null))).Item1);
+    Eq("rhapsody", fake.Updated.Single());
+});
+await Check("scaffold API: the setup options reach the backend as sent, and none sent means the backend's defaults", async () =>
+{
+    Eq(HttpStatusCode.OK, (await Call(Req(HttpMethod.Post, "/api/sites/scaffold", new { name = "opt-app", php = "8.4", steps = new[] { "auth", "proxies" } }))).Item1);
+    Eq("auth,proxies", string.Join(",", fake.LastScaffold!.Steps!));
+    Eq(HttpStatusCode.OK, (await Call(Req(HttpMethod.Post, "/api/sites/scaffold", new { name = "opt-app2", php = "8.4", steps = Array.Empty<string>() }))).Item1);
+    Eq(0, fake.LastScaffold!.Steps!.Length);
+    Eq(HttpStatusCode.OK, (await Call(Req(HttpMethod.Post, "/api/sites/scaffold", new { name = "opt-app3", php = "8.4" }))).Item1);
+    True(fake.LastScaffold!.Steps == null);
 });
 await Check("profiler tools API: needs the token; defaults are readable; unavailable actions are a readable 400", async () =>
 {

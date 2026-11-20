@@ -5,34 +5,64 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>Rhapsody Server</title>
-<script nonce="__NONCE__">try { var t = localStorage.getItem('rhapsody-server.theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) { }</script>
+<script nonce="__NONCE__">try { var t = localStorage.getItem('rhapsody-server.theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; var z = localStorage.getItem('rhapsody-server.textsize'); if (z === '1' || z === '2' || z === '3') document.documentElement.dataset.size = z; } catch (e) { }</script>
 <link rel="icon" type="image/png" href="/assets/icon.png">
 <style nonce="__NONCE__">
 :root {
   color-scheme: light dark;
-  --bg: light-dark(#eef1f6, #0b1018);
-  --panel: light-dark(#fbfcfe, #111925);
-  --raised: light-dark(#ffffff, #18212f);
-  --rail: light-dark(#f6f8fb, #0e1520);
-  --hover: light-dark(#e8edf5, #161f2c);
+  /* The palette. Everything below is built from these. */
+  --p-night: #140a2e;     /* darkest blue */
+  --p-indigo: #4d2aaf;
+  --p-violet: #5e2de9;
+  --p-peri: #96b4ff;      /* lightest blue */
+  --p-grey: #dbdbdb;
+  --p-white: #ffffff;
+  --p-red-soft: oklch(0.81 0.15 5.66);
+  --p-red-mid: oklch(0.66 0.18 8.33);
+  --p-red-deep: oklch(0.57 0.25 18.09);
+
+  --bg: light-dark(color-mix(in oklab, var(--p-grey) 38%, var(--p-white)), var(--p-night));
+  --panel: light-dark(var(--p-white), color-mix(in oklab, var(--p-night) 91%, var(--p-indigo)));
+  --raised: light-dark(var(--p-white), color-mix(in oklab, var(--p-night) 82%, var(--p-indigo)));
+  --rail: light-dark(color-mix(in oklab, var(--p-peri) 9%, var(--p-white)), color-mix(in oklab, var(--p-night) 86%, black));
+  --hover: light-dark(color-mix(in oklab, var(--p-peri) 22%, var(--p-white)), color-mix(in oklab, var(--p-night) 76%, var(--p-indigo)));
   --radius: 10px;
   --radius-sm: 7px;
-  --ink: light-dark(#171f2c, #e6eaf2);
-  --muted: light-dark(#566176, #9aa6ba);
-  --line: light-dark(#d5dbe6, #222c3c);
-  --info: light-dark(oklch(52% 0.16 245), oklch(76% 0.12 245));
-  --accent: light-dark(oklch(48% 0.2 268), oklch(78% 0.12 268));
-  --accent-ink: light-dark(#ffffff, oklch(22% 0.06 268));
-  --ok: light-dark(oklch(58% 0.15 150), oklch(76% 0.17 150));
-  --warn: light-dark(oklch(72% 0.15 75), oklch(80% 0.14 85));
-  --bad: light-dark(oklch(52% 0.2 25), oklch(72% 0.17 25));
-  --off: light-dark(#a8b2c3, #46516a);
+  --ink: light-dark(var(--p-night), color-mix(in oklab, var(--p-grey) 55%, var(--p-white)));
+  --muted: light-dark(color-mix(in oklab, var(--p-night) 76%, var(--p-white)), color-mix(in oklab, var(--p-grey) 76%, var(--p-night)));
+  --line: light-dark(color-mix(in oklab, var(--p-grey) 84%, var(--p-night)), color-mix(in oklab, var(--p-night) 66%, var(--p-indigo)));
+  --line-strong: light-dark(color-mix(in oklab, var(--p-night) 47%, var(--p-white)), color-mix(in oklab, var(--p-night) 38%, var(--p-peri)));   /* edges of buttons and fields */
+  /* accent: links, icons, focus rings, the current item. brand: filled controls (primary button, switch, selected segment). */
+  --accent: light-dark(var(--p-violet), var(--p-peri));
+  --brand: var(--p-violet);
+  --brand-hover: light-dark(var(--p-indigo), color-mix(in oklab, var(--p-violet) 78%, var(--p-peri)));
+  --brand-ink: var(--p-white);
+  --accent-ink: var(--brand-ink);
+  --info: light-dark(oklch(50% 0.15 255), oklch(78% 0.11 235));
+  --ok: light-dark(oklch(54% 0.14 158), oklch(80% 0.15 160));
+  --warn: light-dark(oklch(70% 0.15 75), oklch(83% 0.14 85));
+  --warn-ink: light-dark(oklch(52% 0.12 65), oklch(83% 0.14 85));   /* amber as text */
+  --bad: light-dark(color-mix(in oklab, var(--p-red-deep) 88%, var(--p-night)), var(--p-red-soft));   /* red text */
+  --bad-fill: var(--p-red-mid);                                  /* red dots, bars and borders */
+  --go-fill: light-dark(#007845, #52db9c);                       /* start: filled green */
+  --go-hover: light-dark(#00633a, #7be8b5);
+  --go-ink: light-dark(#ffffff, #05231a);
+  --stop-fill: light-dark(#c4002f, #ff95b3);                     /* stop: filled red */
+  --stop-hover: light-dark(#a30027, #ffb1c6);
+  --stop-ink: light-dark(#ffffff, #2a0010);
+  --off: light-dark(color-mix(in oklab, var(--p-night) 30%, var(--p-white)), color-mix(in oklab, var(--p-night) 55%, var(--p-peri)));
+  --rail-ink: light-dark(color-mix(in oklab, var(--p-night) 84%, var(--p-white)), color-mix(in oklab, var(--p-grey) 88%, var(--p-white)));   /* sidebar links */
+  --rail-label: light-dark(color-mix(in oklab, var(--p-night) 70%, var(--p-white)), color-mix(in oklab, var(--p-grey) 76%, var(--p-night)));   /* sidebar section headings */
+  --shadow: light-dark(rgb(20 10 46 / .08), rgb(0 0 0 / .4));
   --mono: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
   accent-color: var(--accent);
   scrollbar-color: var(--off) transparent;
   scrollbar-width: thin;
   font: 15px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
 }
+:root[data-size="1"] { font-size: 17px; }
+:root[data-size="2"] { font-size: 19px; }
+:root[data-size="3"] { font-size: 21px; }
 :root[data-theme="light"] { color-scheme: light; }
 :root[data-theme="dark"] { color-scheme: dark; }
 * { box-sizing: border-box; }
@@ -48,18 +78,24 @@ a { color: var(--accent); }
 /* layout */
 .app { display: grid; grid-template-columns: 14.5rem minmax(0, 1fr); min-height: 100dvh; }
 .rail { padding: 1.1rem .8rem 1rem; border-right: 1px solid var(--line); background: var(--rail); display: flex; flex-direction: column; gap: .9rem; position: sticky; top: 0; height: 100dvh; overflow-y: auto; }
-.brand { display: block; background: #050a1c; border-radius: 8px; padding: .75rem .8rem; }
+.brand { display: block; padding: .5rem .2rem .6rem; }
+.brand .logo-dark { display: none; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .brand .logo-light { display: none; } :root:not([data-theme="light"]) .brand .logo-dark { display: block; } }
+:root[data-theme="dark"] .brand .logo-light { display: none; }
+:root[data-theme="dark"] .brand .logo-dark { display: block; }
 .brand img { display: block; width: 100%; height: auto; }
 .rail nav { display: grid; gap: .1rem; }
 .rail nav.bottom { margin-top: auto; }
-.nav-label { font-size: .72rem; letter-spacing: .04em; color: var(--muted); padding: .95rem .65rem .3rem; }
-.rail nav a { display: flex; align-items: center; gap: .7rem; color: var(--muted); text-decoration: none; padding: .5rem .65rem; border-radius: var(--radius-sm); }
+.nav-label { font-size: .78rem; letter-spacing: .04em; color: var(--rail-label); padding: .95rem .65rem .3rem; }
+.rail nav a { display: flex; align-items: center; gap: .7rem; color: var(--rail-ink); text-decoration: none; padding: .5rem .65rem; border-radius: var(--radius-sm); }
 .rail nav a .ext { margin-left: auto; width: .85rem; height: .85rem; opacity: .6; }
 .rail nav a:hover { color: var(--ink); background: var(--hover); }
 .rail nav a[aria-current="page"] { color: var(--ink); font-weight: 600; background: var(--raised); box-shadow: 0 0 0 1px var(--line); }
 .rail nav a[aria-current="page"] .ic { color: var(--accent); }
 .theme { display: grid; gap: .35rem; }
-.theme .tl { font-size: .75rem; color: var(--muted); }
+.theme + .theme { margin-top: -.2rem; }
+.theme .seg .pct { font-variant-numeric: tabular-nums; min-width: 3.2rem; }
+.theme .tl { font-size: .78rem; color: var(--rail-label); }
 .theme .seg { display: flex; }
 .theme .seg button { flex: 1; padding: .3rem .25rem; font-size: .8125rem; }
 main { padding: 1.6rem clamp(1rem, 3vw, 2.4rem) 2rem; min-width: 0; max-width: 62rem; width: 100%; }
@@ -75,21 +111,26 @@ main { padding: 1.6rem clamp(1rem, 3vw, 2.4rem) 2rem; min-width: 0; max-width: 6
 dialog.activity { width: min(26rem, 92vw); }
 dialog.activity .body { gap: .7rem; }
 .activity-head { display: flex; gap: .7rem; align-items: center; }
-.spinner { width: .7rem; height: .7rem; border-radius: 50%; background: var(--accent); flex: none; }
+.spinner { width: .7rem; height: .7rem; border-radius: 50%; background: var(--brand); flex: none; }
 .activity-head h2 { font-size: 1.1rem; }
 .activity-msg { color: var(--muted); font-size: .9rem; min-height: 1.4em; overflow-wrap: anywhere; }
 .activity-err { color: var(--bad); font: .8125rem/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 40vh; overflow: auto; border: 1px solid var(--line); border-left: 4px solid var(--bad); border-radius: var(--radius-sm); padding: .6rem .7rem; background: var(--panel); }
 dialog.activity.done .spinner { background: var(--ok); animation: none; }
-dialog.activity.failed .spinner { background: var(--bad); animation: none; }
+dialog.activity.failed .spinner { background: var(--bad-fill); animation: none; }
 
 /* buttons and controls */
-.btn { font: inherit; font-size: .9rem; padding: .42rem .85rem; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--raised); color: var(--ink); cursor: pointer; }
+.btn { font: inherit; font-size: .9rem; padding: .42rem .85rem; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--raised); color: var(--ink); cursor: pointer; }
 .btn:hover:not(:disabled) { border-color: var(--muted); }
 .btn:disabled { opacity: .5; cursor: default; }
 a.btn { text-decoration: none; display: inline-block; }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.btn.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); font-weight: 600; }
+.btn.primary:hover:not(:disabled) { background: var(--brand-hover); border-color: var(--brand-hover); }
 .btn.is-default, .btn.is-default:disabled { border: 2px solid var(--accent); color: var(--ink); font-weight: 600; opacity: 1; padding: calc(.42rem - 1px) calc(.85rem - 1px); }
 .btn.is-active, .btn.is-active:disabled { border: 2px solid var(--ok); color: var(--ink); font-weight: 600; opacity: 1; padding: calc(.42rem - 1px) calc(.85rem - 1px); }
+.btn.go { background: var(--go-fill); border-color: var(--go-fill); color: var(--go-ink); font-weight: 600; }
+.btn.go:hover:not(:disabled) { background: var(--go-hover); border-color: var(--go-hover); }
+.btn.stop { background: var(--stop-fill); border-color: var(--stop-fill); color: var(--stop-ink); font-weight: 600; }
+.btn.stop:hover:not(:disabled) { background: var(--stop-hover); border-color: var(--stop-hover); }
 .btn.quiet { background: transparent; border-color: transparent; color: var(--muted); }
 .btn.quiet:hover:not(:disabled) { color: var(--ink); border-color: var(--line); }
 .btn.danger { color: var(--bad); }
@@ -97,7 +138,7 @@ a.btn { text-decoration: none; display: inline-block; }
 :is(.btn, .switch, a, input, select, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .switch { appearance: none; position: relative; width: 2.6rem; height: 1.45rem; border-radius: 99px; border: 1px solid var(--line); background: var(--off); cursor: pointer; padding: 0; flex: none; }
 .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: calc(1.45rem - 6px); height: calc(1.45rem - 6px); border-radius: 50%; background: #fff; transition: transform .15s; }
-.switch[aria-checked="true"] { background: var(--accent); border-color: var(--accent); }
+.switch[aria-checked="true"] { background: var(--brand); border-color: var(--brand); }
 .switch[aria-checked="true"]::after { transform: translateX(1.15rem); }
 .switch:disabled { opacity: .5; cursor: default; }
 @media (prefers-reduced-motion: reduce) { .switch::after { transition: none; } }
@@ -112,8 +153,23 @@ a.btn { text-decoration: none; display: inline-block; }
 .dot { width: .45rem; height: .45rem; border-radius: 50%; background: var(--off); display: inline-block; flex: none; }
 .pill.running .dot { background: var(--ok); }
 .pill.starting .dot { background: var(--warn); }
-.pill.crashed .dot { background: var(--bad); }
+.pill.crashed .dot { background: var(--bad-fill); }
 .pill.crashed { color: var(--bad); }
+.pill.update { color: var(--warn-ink); border-color: var(--warn); }
+.pill.update .dot { background: var(--warn); }
+.pill.uptodate .dot { background: var(--ok); }
+.sitegroup { display: grid; grid-template-columns: minmax(0, 1fr); gap: .5rem; margin-top: 1.3rem; }
+.sitegroup > h2 { display: flex; align-items: center; gap: .55rem; }
+.sitegroup .count { font-size: .75rem; font-weight: 600; color: var(--muted); border: 1px solid var(--line); border-radius: 99px; padding: 0 .5rem; }
+td.fw { min-width: 12.5rem; white-space: nowrap; }
+.fwcell .mono { font-size: .8125rem; }
+.sitegroup td.path { min-width: 11rem; }
+.sitegroup td.act { min-width: 16rem; white-space: normal; }
+.sitegroup td.act .btn { margin: .15rem .1rem; }
+.sitegroup td:first-child { white-space: nowrap; }
+.sitegroup .table-wrap { width: max-content; }
+.fwcell { display: grid; gap: .25rem; justify-items: start; }
+.fwbtns { display: flex; gap: .35rem; flex-wrap: wrap; }
 .quick { margin-top: 1.4rem; display: flex; gap: 1.2rem; flex-wrap: wrap; }
 
 /* web server switch */
@@ -157,7 +213,19 @@ td.act { text-align: right; white-space: nowrap; }
 
 /* database options in the new-site dialog */
 details.dbopts summary { cursor: pointer; font-weight: 600; font-size: .875rem; }
+.stepopt { display: grid; grid-template-columns: auto 1fr; gap: .1rem .6rem; align-items: start; font-weight: 600; cursor: pointer; }
+.stepopt input { margin-top: .2rem; }
+.stepopt .hint { grid-column: 2; }
+.cmds { display: grid; gap: 1rem; }
+.cmdgroup { display: grid; gap: .45rem; }
+.cmdgroup h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.cmdbtns { display: flex; flex-wrap: wrap; gap: .4rem; }
+.cmdname { display: grid; gap: .2rem; }
+.cmdout { display: grid; gap: .35rem; }
+.cmdout .st { font-size: .85rem; font-weight: 600; }
+.cmdout .st.ok { color: var(--ok); } .cmdout .st.bad { color: var(--bad); }
 .dbgrid { display: grid; gap: .7rem; margin-top: .7rem; }
+.dbgrid.flush { margin-top: 0; }
 .dbgrid .hint { font-weight: 400; color: var(--muted); font-size: .8125rem; }
 
 /* folder picker row */
@@ -179,11 +247,12 @@ label .hint.bad { color: var(--bad); }
 .ver .acts { display: flex; gap: .35rem; justify-content: flex-end; flex-wrap: wrap; }
 
 /* profiler */
-.seg { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
-.seg button { font: inherit; padding: .3rem .8rem; background: var(--panel); color: var(--muted); border: 0; cursor: pointer; }
-.seg button + button { border-left: 1px solid var(--line); }
-.seg button[aria-pressed="true"] { color: var(--accent-ink); font-weight: 600; background: var(--accent); }
-.seg button:not([aria-pressed="true"]):hover:not(:disabled) { color: var(--ink); }
+.seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--radius); overflow: hidden; background: var(--raised); }
+.seg button { font: inherit; padding: .35rem .85rem; background: var(--raised); color: var(--ink); border: 0; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: .4rem; }
+.seg button + button { border-left: 1px solid var(--line-strong); }
+.seg button[aria-pressed="true"] { color: var(--brand-ink); font-weight: 600; background: var(--brand); }
+.seg button:not([aria-pressed="true"]):hover:not(:disabled) { background: var(--hover); }
+.seg button .ic { width: .95rem; height: .95rem; }
 .seg button:disabled { opacity: .5; cursor: default; }
 .pf-list { display: grid; gap: .3rem; margin-top: 1rem; }
 .rq { display: grid; grid-template-columns: 3.4rem 4.9rem minmax(0, 1fr) 2.6rem 5rem 7.5rem; gap: .7rem; align-items: center; text-align: left; font: inherit; color: inherit; padding: .5rem .8rem; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer; }
@@ -201,16 +270,16 @@ label .hint.bad { color: var(--bad); }
 .pf-actions { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
 .rq .at { font: .75rem var(--mono); color: var(--muted); }
 .bar { grid-column: 3 / -1; height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
-.bar i { display: block; height: 100%; background: var(--accent); }
+.bar i { display: block; height: 100%; background: var(--brand); }
 .bar i.warn { background: var(--warn); }
-.bar i.bad { background: var(--bad); }
+.bar i.bad { background: var(--bad-fill); }
 .pf-detail { margin-top: 1rem; display: grid; gap: .6rem; padding: 1rem; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
 .pf-detail h2 { font-size: 1rem; overflow-wrap: anywhere; }
 .q { border-top: 1px solid var(--line); padding: .5rem 0; }
 .q summary { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: .7rem; cursor: pointer; align-items: baseline; }
 .q .sql { font: .8125rem var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .q .t { font: .8125rem var(--mono); }
-.q .t.warn { color: var(--warn); }
+.q .t.warn { color: var(--warn-ink); }
 .q .t.bad { color: var(--bad); }
 .q .who { font: .75rem var(--mono); color: var(--muted); }
 .q pre { margin: .5rem 0 0; font: .78rem/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; background: var(--raised); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: .6rem; }
@@ -220,7 +289,7 @@ label .hint.bad { color: var(--bad); }
 .vt-row { display: flex; flex-wrap: wrap; gap: .4rem; }
 .vt { font: .75rem var(--mono); padding: .2rem .5rem; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--raised); white-space: nowrap; }
 .vt b { font-weight: 600; margin-right: .4rem; color: var(--muted); }
-.vt.good { border-color: #2f9e6d; }
+.vt.good { border-color: var(--ok); }
 .vt.ok { border-color: var(--warn); }
 .vt.poor { border-color: var(--bad); }
 .xd { display: grid; gap: .5rem; }
@@ -240,7 +309,7 @@ label .hint.bad { color: var(--bad); }
 .lh-score { display: grid; justify-items: center; min-width: 5.5rem; padding: .5rem .7rem; border: 2px solid var(--line); border-radius: var(--radius); }
 .lh-score b { font: 700 1.4rem var(--mono); }
 .lh-score span { font-size: .75rem; color: var(--muted); }
-.lh-score.good { border-color: #2f9e6d; }
+.lh-score.good { border-color: var(--ok); }
 .lh-score.ok { border-color: var(--warn); }
 .lh-score.poor { border-color: var(--bad); }
 .lh-res { display: grid; gap: .6rem; }
@@ -258,7 +327,7 @@ details.ai-backup[open] > summary { margin-bottom: .7rem; }
 .ai-status { min-height: 1.4em; font-size: .875rem; overflow-wrap: anywhere; white-space: pre-wrap; }
 .ai-status.ok, .ai-status.bad { padding: .5rem .7rem; border: 1px solid var(--line); border-left-width: 4px; border-radius: var(--radius-sm); background: var(--panel); }
 .ai-status.ok { border-left-color: var(--ok); }
-.ai-status.bad { border-left-color: var(--bad); }
+.ai-status.bad { border-left-color: var(--bad-fill); }
 .answer { display: grid; gap: .65rem; font-size: .9375rem; overflow-wrap: anywhere; max-height: 52vh; overflow: auto; }
 .answer p, .answer ul, .answer ol { margin: 0; }
 .answer ul, .answer ol { padding-left: 1.3rem; display: grid; gap: .25rem; }
@@ -288,30 +357,40 @@ details.sent pre.log { margin-top: .5rem; max-height: 30vh; }
 .where { display: flex; flex-wrap: wrap; gap: .45rem .7rem; align-items: center; margin: -.5rem 0 1.1rem; font-size: .9rem; }
 .where .mono, .notice .mono { overflow-wrap: anywhere; }
 .hp { display: grid; gap: 1.6rem; max-width: 46rem; margin-top: 1.1rem; }
-.hp section { display: grid; gap: .75rem; }
+.hp > section { display: grid; gap: .75rem; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 1.1rem 1.25rem; box-shadow: 0 1px 2px var(--shadow); }
+.hp > section > h2 { padding-bottom: .55rem; border-bottom: 1px solid var(--line); }
 .hp .hp { margin-top: 0; gap: .9rem; }
 .hp h2 { font-size: 1.05rem; }
 .hp p { margin: 0; }
 .pathrow { display: grid; gap: .4rem; }
 .pathrow .pl { font-weight: 600; font-size: .9rem; }
 .pathrow .btns { display: flex; gap: .4rem; flex-wrap: wrap; }
-.pathbox { display: block; font: .85rem/1.45 var(--mono); background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: .5rem .65rem; overflow-wrap: anywhere; user-select: all; }
+.pathbox { display: block; font: .85rem/1.45 var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: .5rem .65rem; overflow-wrap: anywhere; user-select: all; }
 .hp details { border-bottom: 1px solid var(--line); padding: .55rem 0; }
 .hp details > summary { cursor: pointer; font-weight: 600; }
 .hp details > p { margin: .55rem 0 .15rem; }
+.hgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)); gap: 1rem; max-width: 62rem; margin-top: 1.1rem; }
+.hcard { display: flex; gap: .85rem; align-items: flex-start; padding: 1rem 1.1rem; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 1px 2px var(--shadow); color: var(--ink); text-decoration: none; }
+.hcard:hover { border-color: var(--accent); background: var(--hover); }
+.hcard-text { display: grid; gap: .2rem; }
+.crumb { display: flex; gap: .5rem; align-items: center; color: var(--muted); font-size: .875rem; margin-bottom: .35rem; }
+.hnav { display: flex; justify-content: space-between; gap: 1rem; max-width: 46rem; margin-top: 1.4rem; }
+.hp ul { margin: 0; padding-left: 1.3rem; display: grid; gap: .45rem; }
+.defs { display: grid; grid-template-columns: max-content 1fr; gap: .4rem 1rem; margin: 0; }
+.defs dt { font-weight: 600; } .defs dd { margin: 0; }
 .hp ol { margin: 0; padding-left: 1.3rem; display: grid; gap: .45rem; }
-.conn { position: fixed; right: 1rem; bottom: 1rem; margin: 0; background: var(--raised); box-shadow: 0 4px 18px rgb(0 0 0 / .25); }
+.conn { position: fixed; right: 1rem; bottom: 1rem; margin: 0; background: var(--raised); box-shadow: 0 4px 18px var(--shadow); }
 .conn[hidden] { display: none; }
 
 /* notices */
 .notice { display: flex; gap: .8rem; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: .65rem .9rem; border-radius: var(--radius); border: 1px solid var(--line); border-left-width: 4px; background: var(--panel); margin-bottom: 1rem; }
-.notice.bad { border-left-color: var(--bad); }
+.notice.bad { border-left-color: var(--bad-fill); }
 .notice.warn { border-left-color: var(--warn); }
 .notice .btns { display: flex; gap: .4rem; }
 
 /* dialogs */
 dialog { border: 1px solid var(--line); border-radius: 8px; background: var(--raised); color: var(--ink); padding: 0; width: min(30rem, 92vw); }
-dialog::backdrop { background: rgb(8 12 20 / .55); overflow: hidden; overscroll-behavior: contain; }
+dialog::backdrop { background: color-mix(in oklab, var(--p-night) 62%, transparent); overflow: hidden; overscroll-behavior: contain; }
 dialog:modal { overscroll-behavior: contain; }
 dialog form, dialog .body { padding: 1.25rem; display: grid; gap: .95rem; }
 dialog h2 { font-size: 1.15rem; }
@@ -329,6 +408,8 @@ dialog form.contents { display: contents; padding: 0; }
 .ic { width: 1.1rem; height: 1.1rem; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 .ico { display: inline-flex; }
 .btn .ic { width: .95rem; height: .95rem; vertical-align: -.15em; margin-right: .3rem; }
+.btn.ic-auto { display: inline-flex; align-items: center; gap: .4rem; }
+.btn.ic-auto > .ic { margin: 0; }
 .tile { --h: 265; display: inline-grid; place-items: center; width: 2.4rem; height: 2.4rem; border-radius: 9px; flex: none;
   background: light-dark(oklch(95% .035 var(--h)), oklch(30% .07 var(--h)));
   color: light-dark(oklch(46% .16 var(--h)), oklch(82% .13 var(--h)));
@@ -432,6 +513,25 @@ button.log-row:hover { background: var(--hover); }
 <symbol id="i-ext" viewBox="0 0 24 24"><path d="M15 3h6v6M10 14 21 3M19 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"/></symbol>
 <symbol id="i-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
 <symbol id="i-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+<symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z" fill="currentColor"/></symbol>
+<symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 5 5L20 7"/></symbol>
+<symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12h10l1-12M9 7V4h6v3"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14-4L4 9M4 4v5h5M4 13a8 8 0 0 0 14 4l2-2M20 20v-5h-5"/></symbol>
+<symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+<symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4"/></symbol>
+<symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></symbol>
+<symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 11l5 5 5-5M5 20h14"/></symbol>
+<symbol id="i-save" viewBox="0 0 24 24"><path d="M5 4h11l3 3v13H5zM8 4v5h7V4M8 20v-6h8v6"/></symbol>
+<symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="m9 12 2 2 4-4"/></symbol>
+<symbol id="i-terminal" viewBox="0 0 24 24"><path d="m5 8 4 4-4 4M12 17h7"/></symbol>
+<symbol id="i-send" viewBox="0 0 24 24"><path d="M4 12 20 4l-4 16-4-7z"/></symbol>
+<symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3"/></symbol>
+<symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4"/></symbol>
+<symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></symbol>
+<symbol id="i-auto" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/></symbol>
 <symbol id="i-updown" viewBox="0 0 24 24"><path d="m3 16 4 4 4-4M7 20V4M21 8l-4-4-4 4M17 4v16"/></symbol>
 <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></symbol>
 <symbol id="i-warn" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></symbol>
@@ -439,7 +539,7 @@ button.log-row:hover { background: var(--hover); }
 </defs></svg>
 <div class="app">
   <aside class="rail">
-    <a class="brand" href="#/services" aria-label="Rhapsody Server"><img src="/assets/logo.png" alt="Rhapsody Server" width="665" height="113"></a>
+    <a class="brand" href="#/services" aria-label="Rhapsody Server"><img class="logo-light" src="/assets/logo-light.png" alt="Rhapsody Server" width="665" height="113"><img class="logo-dark" src="/assets/logo.png" alt="" width="665" height="113"></a>
     <nav aria-label="Sections">
       <a href="#/services" data-route="services"><svg class="ic" aria-hidden="true"><use href="#i-grid"/></svg>Services</a>
       <a href="#/sites" data-route="sites"><svg class="ic" aria-hidden="true"><use href="#i-globe"/></svg>Sites</a>
@@ -452,7 +552,7 @@ button.log-row:hover { background: var(--hover); }
       <a href="#/profiler" data-route="profiler"><svg class="ic" aria-hidden="true"><use href="#i-activity"/></svg>Profiler</a>
       <a href="#" id="lnkMail" target="_blank" rel="noopener"><svg class="ic" aria-hidden="true"><use href="#i-mail"/></svg>Mail inbox<svg class="ic ext" aria-hidden="true"><use href="#i-ext"/></svg></a>
       <div class="nav-label">Assistant</div>
-      <a href="#/ask" data-route="ask"><svg class="ic" aria-hidden="true"><use href="#i-chat"/></svg>Ask</a>
+      <a href="#/ask" data-route="ask"><svg class="ic" aria-hidden="true"><use href="#i-chat"/></svg>Ask AI</a>
       <a href="#/ai" data-route="ai"><svg class="ic" aria-hidden="true"><use href="#i-sparkles"/></svg>AI help</a>
     </nav>
     <nav aria-label="More" class="bottom">
@@ -464,6 +564,14 @@ button.log-row:hover { background: var(--hover); }
         <button type="button" data-theme-set="light" aria-pressed="false">Light</button>
         <button type="button" data-theme-set="auto" aria-pressed="true">Auto</button>
         <button type="button" data-theme-set="dark" aria-pressed="false">Dark</button>
+      </div>
+    </div>
+    <div class="theme" role="group" aria-labelledby="sizeLbl">
+      <span class="tl" id="sizeLbl">Text size</span>
+      <div class="seg">
+        <button type="button" id="sizeDown" aria-label="Smaller text" title="Smaller text">A−</button>
+        <button type="button" id="sizeReset" class="pct" aria-label="Reset text size" title="Reset text size">100%</button>
+        <button type="button" id="sizeUp" aria-label="Larger text" title="Larger text">A+</button>
       </div>
     </div>
   </aside>
@@ -499,11 +607,27 @@ button.log-row:hover { background: var(--hover); }
         <label>Password <input name="dbPass" type="password" autocomplete="new-password" placeholder="Only for a user other than root"></label>
       </div>
     </details>
+    <details class="dbopts" id="rhStepsBox" hidden>
+      <summary>Set up <span class="opt">(optional)</span></summary>
+      <div class="dbgrid">
+        <p class="hint">Run once the project is installed. Anything you skip is still there later under Sites, Commands.</p>
+        <div id="rhSteps" class="dbgrid flush"></div>
+      </div>
+    </details>
     <div class="row-end">
       <button class="btn" value="cancel" formnovalidate>Cancel</button>
       <button class="btn primary" value="create">Create site</button>
     </div>
   </form>
+</dialog>
+
+<dialog id="dlgCmds" class="wide" aria-labelledby="tCmds">
+  <div class="body">
+    <h2 id="tCmds">Rhapsody commands</h2>
+    <p class="hint muted small" id="cmdsWhere"></p>
+    <div class="cmds" id="cmdsBody"></div>
+    <div class="row-end"><button class="btn" type="button" id="cmdsClose">Close</button></div>
+  </div>
 </dialog>
 
 <dialog id="dlgExisting" aria-labelledby="t2">
@@ -585,6 +709,41 @@ button.log-row:hover { background: var(--hover); }
     return v;
   }
   const icon = n => { const e = document.createElement('span'); e.className = 'ico'; e.append(svgIcon(n)); return e; };
+
+  // Every button gets an icon matching its label, so screens stay consistent without each call site picking one.
+  // Start and stop buttons are also tinted green and red. Buttons that already carry an icon, or have none to show, are left alone.
+  const ICON_RULES = [
+    [/^start\b/i, 'play', 'go'], [/^run lighthouse/i, 'play', 'go'], [/^stop\b/i, 'stop', 'stop'],
+    [/^restart\b|^update\b|^reset\b/i, 'refresh'], [/^turn on/i, 'zap'],
+    [/^(new|add|create)\b/i, 'plus'], [/^add existing/i, 'folder'],
+    [/^(cancel|close|dismiss)\b/i, 'x'], [/^check\b/i, 'refresh'],
+    [/^(remove|delete|clear)\b/i, 'trash'],
+    [/^(apply|make\b|save and test|ok)\b/i, 'check'], [/^save\b/i, 'save'],
+    [/^undo\b/i, 'undo'], [/^copy\b/i, 'copy'],
+    [/^(edit|rename)\b/i, 'edit'], [/^(show in|show .*folder|browse|choose|open folder|reveal)/i, 'folder'],
+    [/^(install|download)\b/i, 'download'], [/^grant\b/i, 'shield'],
+    [/^(ask|send)\b/i, 'send'], [/\bAI\b|^explain|^inspect/i, 'sparkles'],
+    [/^(newest|newer)\b/i, 'left'], [/^older\b/i, 'right'],
+    [/^light$/i, 'sun'], [/^dark$/i, 'moon'], [/^auto$/i, 'auto'],
+    [/^(nginx|apache)$/i, 'server'], [/^commands$/i, 'terminal'], [/^test\b/i, 'activity'],
+  ];
+  function decorateButtons(root) {
+    for (const b of (root || document).querySelectorAll('button.btn, .seg button, a.btn')) {
+      if (b.querySelector('.ic') || b.classList.contains('toggle') || b.classList.contains('switch')) continue;
+      const t = b.textContent.trim();
+      if (!t) continue;
+      let hit = ICON_RULES.find(r => r[0].test(t));
+      if (!hit && b.hasAttribute('data-cmd')) hit = [null, 'terminal'];
+      if (!hit) continue;
+      b.prepend(svgIcon(hit[1]));
+      b.classList.add('ic-auto');
+      if (hit[2] && b.classList.contains('btn') && !/\b(primary|go|stop|quiet|danger|is-default|is-active)\b/.test(b.className.replace('btn', ''))) b.classList.add(hit[2]);
+    }
+  }
+  let decoPending = false;
+  new MutationObserver(() => { if (decoPending) return; decoPending = true; queueMicrotask(() => { decoPending = false; decorateButtons(); }); })
+    .observe(document.documentElement, { childList: true, subtree: true });
+  decorateButtons();
   const GLYPH = { nginx: 'server', apache: 'server', php: 'code', mariadb: 'db', redis: 'zap', mailpit: 'mail', phpmyadmin: 'table' };
   const kindOf = id => { const k = String(id).toLowerCase().replace(/^(php)[-\d.].*$/, '$1'); return GLYPH[k] ? k : 'server'; };
   function tile(id, cls) {
@@ -602,6 +761,21 @@ button.log-row:hover { background: var(--hover); }
   }
   document.querySelectorAll('[data-theme-set]').forEach(b => b.addEventListener('click', () => setTheme(b.dataset.themeSet, true)));
   setTheme(document.documentElement.dataset.theme || 'auto', false);
+
+  // ---- text size: four steps (100%, 113%, 127%, 140%). Everything is sized in rem, so the whole page scales. Saved per browser.
+  const SIZE_PCT = [100, 113, 127, 140];
+  function setTextSize(n, save) {
+    n = Math.max(0, Math.min(SIZE_PCT.length - 1, n | 0));
+    if (n) document.documentElement.dataset.size = String(n); else delete document.documentElement.dataset.size;
+    $('#sizeReset').textContent = SIZE_PCT[n] + '%';
+    $('#sizeDown').disabled = n === 0; $('#sizeUp').disabled = n === SIZE_PCT.length - 1;
+    if (save) { try { if (n) localStorage.setItem('rhapsody-server.textsize', String(n)); else localStorage.removeItem('rhapsody-server.textsize'); } catch { } }
+  }
+  const curSize = () => +(document.documentElement.dataset.size || 0);
+  $('#sizeDown').addEventListener('click', () => setTextSize(curSize() - 1, true));
+  $('#sizeUp').addEventListener('click', () => setTextSize(curSize() + 1, true));
+  $('#sizeReset').addEventListener('click', () => setTextSize(0, true));
+  setTextSize(curSize(), false);
 
   // ---- token: arrives once in the URL fragment, then lives in localStorage so a bookmark keeps working
   let token = localStorage.getItem('rhapsody-server.token') || '';
@@ -704,8 +878,8 @@ button.log-row:hover { background: var(--hover); }
     return h('div', {},
       h('div', { class: 'page-head' }, h('h1', {}, 'Services'),
         h('div', { class: 'actions' },
-          h('button', { class: 'btn primary', disabled: busy(), onclick: () => act(() => api('POST', '/api/services/start-all')) }, 'Start all'),
-          h('button', { class: 'btn', disabled: busy() || !anyOn, onclick: () => act(() => api('POST', '/api/services/stop-all')) }, 'Stop all'))),
+          h('button', { class: 'btn go', disabled: busy(), onclick: () => act(() => api('POST', '/api/services/start-all')) }, 'Start all'),
+          h('button', { class: 'btn stop', disabled: busy() || !anyOn, onclick: () => act(() => api('POST', '/api/services/stop-all')) }, 'Stop all'))),
       h('p', { class: 'lede muted' }, 'Start only what you need. PHP workers start and stop with the web server.'),
       h('div', { class: 'websw' },
         h('span', { class: 'small' }, 'Web server'),
@@ -730,20 +904,105 @@ button.log-row:hover { background: var(--hover); }
         h('p', {}, 'No sites yet. Create a Rhapsody site, or point Rhapsody Server at a project folder you already have.'),
         h('button', { class: 'btn primary', onclick: openRhapsody }, 'New Rhapsody site')));
     }
-    const rows = S.sites.map(site => h('tr', {},
+    const siteRow = (site, fw) => h('tr', {},
       h('td', {}, h('a', { href: site.url, target: '_blank', rel: 'noopener' }, site.domain)),
       h('td', {}, h('select', { 'aria-label': `PHP version for ${site.domain}`, disabled: busy(),
         onchange: e => act(() => api('PUT', `/api/sites/${site.name}/php`, { php: e.target.value })) },
         S.settings.phpBranches.map(b => h('option', { value: b, selected: b === site.php }, 'PHP ' + b)))),
+      fw ? h('td', { class: 'fw' }, frameworkCell(site)) : null,
       h('td', { class: 'path', title: site.root }, site.root, site.publicDir ? h('div', { class: 'small' }, 'serves /' + site.publicDir) : null),
       h('td', { class: 'act' },
         S.canOpenFolder ? openBtn('site', site.name, 'Open folder', 'btn sm') : null, ' ',
+        site.rhapsody ? h('button', { class: 'btn sm', type: 'button', disabled: busy(), title: 'Run Rhapsody commands for this site: migrations, caches, generators',
+          onclick: () => openCommands(site) }, 'Commands') : null, site.rhapsody ? ' ' : null,
         h('button', { class: 'btn sm', type: 'button', title: 'Asks the web server for this site and shows what came back, plus the web server and PHP error logs',
           onclick: e => checkSite(site, e.currentTarget) }, 'Test'), ' ',
-        h('button', { class: 'btn sm quiet danger', disabled: busy(), onclick: () => removeSite(site) }, 'Remove'))));
-    return h('div', {}, head, lede, where, h('div', { class: 'table-wrap' },
-      h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Address'), h('th', {}, 'PHP'), h('th', {}, 'Folder'), h('th', {}))), h('tbody', {}, rows))));
+        h('button', { class: 'btn sm quiet danger', disabled: busy(), onclick: () => removeSite(site) }, 'Remove')));
+    const table = (rows, fw) => h('div', { class: 'table-wrap' },
+      h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Address'), h('th', {}, 'PHP'), fw ? h('th', {}, 'Framework') : null, h('th', {}, 'Folder'), h('th', {}))), h('tbody', {}, rows)));
+    const rh = S.sites.filter(x => x.rhapsody), other = S.sites.filter(x => !x.rhapsody);
+    rh.forEach(x => { if (!UPD[x.name]) checkUpdate(x, false); });
+    const group = (title, note, list, fw) => list.length ? h('section', { class: 'sitegroup' },
+      h('h2', {}, title, h('span', { class: 'count' }, String(list.length))), note ? h('p', { class: 'muted small' }, note) : null,
+      table(list.map(x => siteRow(x, fw)), fw)) : null;
+    return h('div', {}, head, lede, where,
+      group('Rhapsody sites', 'Built on the Rhapsody framework. The Framework column shows the installed version and whether a newer one is out.', rh, true),
+      group('Other sites', null, other, false));
   }
+
+  // ---- Rhapsody updates: is a newer arout/rhapsody-core out? Checked once per site per page load, and on request.
+  const UPD = {};   // site name -> { checking } | { info } | { error }
+  async function checkUpdate(site, force) {
+    UPD[site.name] = { checking: true };
+    try { UPD[site.name] = { info: await api('POST', `/api/sites/${encodeURIComponent(site.name)}/updates${force ? '?force=1' : ''}`) }; }
+    catch (e) { UPD[site.name] = { error: e.message }; }
+    if (route() === 'sites') render();
+  }
+  async function updateRhapsody(site, to) {
+    if (!(await confirmBox('Update ' + site.domain + '?', `Runs composer update for arout/rhapsody-core${to ? ' (newest is ' + to + ')' : ''} in ${site.root}. Your own code is not changed, but a backup of the project (or a Git commit) first is a good idea.`, 'Update')))
+      return;
+    act(async () => { await api('POST', `/api/sites/${encodeURIComponent(site.name)}/update`); delete UPD[site.name]; });
+  }
+  function frameworkCell(site) {
+    const u = UPD[site.name] || {}, info = u.info;
+    const have = (info && info.installed) || site.coreVersion;
+    const status = u.checking ? h('span', { class: 'muted small' }, 'Checking for updates…')
+      : u.error ? h('span', { class: 'muted small', title: u.error }, 'Couldn’t check for updates')
+      : info && info.error ? h('span', { class: 'muted small', title: info.error }, info.error)
+      : info && info.updateAvailable ? h('span', { class: 'pill update' }, h('span', { class: 'dot' }), 'Update available: ' + info.latest)
+      : info ? h('span', { class: 'pill uptodate' }, h('span', { class: 'dot' }), 'Up to date') : null;
+    return h('div', { class: 'fwcell' },
+      h('div', {}, h('span', { class: 'mono' }, 'rhapsody-core ' + (have || '?'))),
+      status,
+      h('div', { class: 'fwbtns' },
+        info && info.updateAvailable ? h('button', { class: 'btn sm primary', type: 'button', disabled: busy(), onclick: () => updateRhapsody(site, info.latest) }, 'Update to ' + info.latest) : null,
+        h('button', { class: 'btn sm quiet', type: 'button', disabled: !!u.checking, onclick: () => checkUpdate(site, true) }, 'Check for updates')));
+  }
+
+  // ---- Rhapsody commands: buttons for `php rhapsody ...`. The page names a command from the server's list; the server builds the command line.
+  const CM = { site: null, running: false };
+  function openCommands(site) {
+    const groups = (S && S.rhapsodyTools && S.rhapsodyTools.groups) || [];
+    CM.site = site; CM.running = false;
+    $('#tCmds').textContent = 'Rhapsody commands for ' + site.domain;
+    $('#cmdsWhere').textContent = `Runs in ${site.root} with PHP ${site.php}. Commands that use the database need MariaDB running.`;
+    const out = h('div', { class: 'cmdout', id: 'cmdOut', hidden: true });
+    const body = [];
+    for (const g of groups) {
+      const needsName = g.commands.some(c => c.needsName);
+      body.push(h('div', { class: 'cmdgroup' }, h('h3', {}, g.title),
+        needsName ? h('label', { class: 'cmdname' }, 'Name',
+          h('input', { id: 'cmdName', autocomplete: 'off', spellcheck: 'false', maxlength: 80, placeholder: g.commands.find(c => c.needsName).nameHint || 'Name',
+            oninput: syncCommandButtons })) : null,
+        h('div', { class: 'cmdbtns' }, g.commands.map(c => h('button', { class: 'btn sm', type: 'button', 'data-cmd': c.id, 'data-needs-name': c.needsName, title: c.description,
+          onclick: () => runCommand(c) }, c.label)))));
+    }
+    $('#cmdsBody').replaceChildren(...body, out);
+    syncCommandButtons();
+    $('#dlgCmds').showModal();
+  }
+  function syncCommandButtons() {
+    const named = (($('#cmdName') || {}).value || '').trim().length > 0;
+    for (const b of $('#cmdsBody').querySelectorAll('button[data-cmd]'))
+      b.disabled = CM.running || (b.hasAttribute('data-needs-name') && !named);
+  }
+  async function runCommand(c) {
+    if (CM.running || !CM.site) return;
+    const out = $('#cmdOut'), name = (($('#cmdName') || {}).value || '').trim();
+    CM.running = true; syncCommandButtons();
+    out.hidden = false;
+    out.replaceChildren(h('div', { class: 'st' }, 'Running ' + c.label + '…'));
+    try {
+      const r = await api('POST', `/api/sites/${encodeURIComponent(CM.site.name)}/rhapsody`, { command: c.id, name: c.needsName ? name : null });
+      out.replaceChildren(h('div', { class: 'st ' + (r.ok ? 'ok' : 'bad') }, (r.ok ? 'Done: ' : 'Needs attention: ') + c.label),
+        h('pre', { class: 'log' }, '$ ' + r.command + '\n\n' + r.output));
+    } catch (e) {
+      out.replaceChildren(h('div', { class: 'st bad' }, c.label + ' could not run'), h('pre', { class: 'log' }, e.message));
+    } finally {
+      CM.running = false; syncCommandButtons();
+    }
+  }
+  $('#cmdsClose').addEventListener('click', () => $('#dlgCmds').close());
 
   async function checkSite(site, btn) {
     btn.disabled = true; btn.textContent = 'Testing…';
@@ -1153,7 +1412,7 @@ button.log-row:hover { background: var(--hover); }
   }
 
   function viewAsk() {
-    const head = h('div', { class: 'page-head' }, h('h1', {}, 'Ask'));
+    const head = h('div', { class: 'page-head' }, h('h1', {}, 'Ask AI'));
     if (!A) return h('div', {}, head, h('p', { class: 'lede muted' }, 'Loading…'));
     if (!aiReady())
       return h('div', {}, head, h('div', { class: 'empty' },
@@ -1217,7 +1476,7 @@ button.log-row:hover { background: var(--hover); }
     if (S && S.windows && !S.hostsWritable)
       out.push(h('div', { class: 'notice warn' },
         h('span', {}, 'Rhapsody Server can’t edit your hosts file yet, so .test addresses won’t open.'),
-        h('button', { class: 'btn sm', disabled: busy(), onclick: () => act(() => api('POST', '/api/hosts/grant')) }, 'Grant access')));
+        h('button', { class: 'btn sm primary', disabled: busy(), onclick: () => act(() => api('POST', '/api/hosts/grant')) }, 'Grant access')));
     const made = created && S ? S.sites.find(x => x.name === created.name) : null;
     if (made)
       out.push(h('div', { class: 'notice', role: 'status' },
@@ -1228,7 +1487,7 @@ button.log-row:hover { background: var(--hover); }
     if (err)
       out.push(h('div', { class: 'notice bad', role: 'alert' }, h('span', {}, err),
         h('span', { class: 'btns' },
-          /hosts file/i.test(err) ? h('button', { class: 'btn sm', onclick: () => act(() => api('POST', '/api/hosts/grant')) }, 'Grant access') : null,
+          /hosts file/i.test(err) ? h('button', { class: 'btn sm primary', onclick: () => act(() => api('POST', '/api/hosts/grant')) }, 'Grant access') : null,
           h('button', { class: 'btn sm quiet', onclick: () => { err = null; render(); } }, 'Dismiss'))));
     return out;
   }
@@ -1256,39 +1515,178 @@ button.log-row:hover { background: var(--hover); }
       h('div', { class: 'btns' }, S.canOpenFolder ? openBtn(target, name, 'Open folder', 'btn sm primary') : null, copyBtn(path)));
   }
 
+  // ---- Help: an index of topics, each on its own page (#/help/<topic>)
+  const HELP_TOPICS = [
+    { id: 'start', icon: 'play', title: 'Getting started', blurb: 'The first five minutes: start the stack, make a site, open it.' },
+    { id: 'rhapsody', icon: 'code', title: 'Rhapsody framework', blurb: 'New Rhapsody sites, setup options, the Commands button and template hints.' },
+    { id: 'sites', icon: 'globe', title: 'Sites and domains', blurb: 'Adding existing projects, the Rhapsody and other site lists, the public folder, PHP versions, HTTPS and the hosts file.' },
+    { id: 'stack', icon: 'layers', title: 'Services, versions and PHP settings', blurb: 'Web server, MariaDB, Redis, Mailpit, extensions and php.ini.' },
+    { id: 'debug', icon: 'activity', title: 'Logs and profiling', blurb: 'Logs, the profiler, Xdebug, Lighthouse, browser timings and template hints.' },
+    { id: 'ai', icon: 'sparkles', title: 'AI help', blurb: 'Explain this, Inspect this request and Ask AI. Optional and off until you set it up.' },
+    { id: 'app', icon: 'grid', title: 'The tray, the dashboard and appearance', blurb: 'What the tray menu does, the theme, and how the dashboard stays private.' },
+    { id: 'files', icon: 'folder', title: 'Where everything is stored', blurb: 'Your code, databases, settings and logs, each with an Open folder button.' },
+    { id: 'trouble', icon: 'alert', title: 'If something goes wrong', blurb: 'Answers to the usual problems.' },
+  ];
+  const helpTopic = () => (location.hash.match(/^#\/help\/([\w-]+)/) || [])[1];
+  const helpLink = (id, text) => h('a', { href: '#/help/' + id }, text);
+
   function viewHelp() {
+    const id = helpTopic(), topic = HELP_TOPICS.find(t => t.id === id);
+    if (!topic) {
+      return h('div', {}, h('div', { class: 'page-head' }, h('h1', {}, 'Help')),
+        h('p', { class: 'lede muted' }, 'Pick a topic. Everything here describes what Rhapsody Server does today.'),
+        h('div', { class: 'hgrid' }, HELP_TOPICS.map(t =>
+          h('a', { class: 'hcard', href: '#/help/' + t.id },
+            h('span', { class: 'tile sm' }, icon(t.icon)),
+            h('span', { class: 'hcard-text' }, h('strong', {}, t.title), h('span', { class: 'muted small' }, t.blurb))))));
+    }
+    const at = HELP_TOPICS.indexOf(topic), prev = HELP_TOPICS[at - 1], next = HELP_TOPICS[at + 1];
+    return h('div', {},
+      h('nav', { class: 'crumb', 'aria-label': 'Breadcrumb' }, h('a', { href: '#/help' }, 'Help'), h('span', { 'aria-hidden': 'true' }, '›'), h('span', {}, topic.title)),
+      h('div', { class: 'page-head' }, h('h1', {}, topic.title)),
+      h('div', { class: 'hp' }, helpBody(id)),
+      h('div', { class: 'hnav' },
+        prev ? h('a', { class: 'btn', href: '#/help/' + prev.id }, icon('left'), prev.title) : h('span', {}),
+        next ? h('a', { class: 'btn', href: '#/help/' + next.id }, next.title, icon('right')) : h('span', {})));
+  }
+
+  function helpBody(id) {
     const st = S.settings, sep = st.sitesRoot.includes('\\') ? '\\' : '/';
     const q = (question, ...answer) => h('details', {}, h('summary', {}, question), h('p', {}, ...answer));
-    return h('div', {}, h('div', { class: 'page-head' }, h('h1', {}, 'Help')),
-      h('div', { class: 'hp' },
-        h('section', {},
-          h('h2', {}, 'Where your code is stored'),
+    const sec = (title, ...kids) => h('section', {}, h('h2', {}, title), ...kids);
+    const ol = (...items) => h('ol', {}, items.map(i => h('li', {}, ...[].concat(i))));
+    const ul = (...items) => h('ul', {}, items.map(i => h('li', {}, ...[].concat(i))));
+    const cmdGroups = [
+      ['Database', 'migrate, auth:install, queue:install. These need MariaDB running.'],
+      ['Speed and caches', 'cache:clear, app:cache-warm, build:proxies, route:cache, route:clear.'],
+      ['Project', 'env:sync, app:check-version, module:list, module:health, react:install.'],
+      ['Queue', 'queue:work (until the queue is empty), queue:failed, queue:retry all.'],
+      ['Generate', 'make:controller, make:model, make:migration, make:middleware, make:event, make:listener. Each asks for a name, such as UserController.'],
+    ];
+    switch (id) {
+      case 'start': return [
+        sec('Your first site',
+          ol('On Services, make sure the web server is running. Start MariaDB too if your site uses a database.',
+            'On Sites, choose New Rhapsody site and give it a name, such as my-app.',
+            `Open it from the Sites list at https://my-app.${st.tld}. If a banner mentions the hosts file, choose Grant access so .${st.tld} addresses open.`,
+            'phpMyAdmin (databases) and Mail inbox (mail your site sends) are in the sidebar.')),
+        sec('What the sidebar is for',
+          ul([h('strong', {}, 'Services'), ' start and stop the web server, MariaDB, Redis and Mailpit.'],
+            [h('strong', {}, 'Sites'), ' create, add and remove sites, and pick each one’s PHP version.'],
+            [h('strong', {}, 'Versions and Modules'), ' install other versions, switch PHP extensions on and off, edit php.ini.'],
+            [h('strong', {}, 'Logs and Profiler'), ' find out what happened and how long it took.'],
+            [h('strong', {}, 'Ask AI and AI help'), ' optional plain-language help with errors and slow pages.'])),
+        sec('Opening the dashboard again',
+          h('p', {}, 'The dashboard is a local page, normally at http://localhost:7766, and it is served while the tray app is running. Bookmark it. If the browser cannot connect, the app has been quit: start Rhapsody Server again, or open rhapsody://open.'))]; 
+      case 'rhapsody': return [
+        sec('Creating a Rhapsody site',
+          h('p', {}, 'Sites → New Rhapsody site does the whole job in one step: it installs the Rhapsody skeleton with Composer, creates the database, writes .env, adds the web server host, a trusted HTTPS certificate and the hosts-file entry, then reloads the web server.'),
+          ul(`Rhapsody needs PHP ${st.minRhapsodyPhp || '8.4.1'} or newer, so the PHP picker only offers versions that qualify. If the one you chose is installed but too old, you are told to update it on Versions before anything is created.`,
+            'The database is created for you, named after the site (hyphens become underscores). It uses root, which has no password in this stack, unless you name another user and password.',
+            'The .env file gets APP_URL, APP_NAME, a fresh APP_KEY, the DB_* settings, MAIL_* pointing at Mailpit and REDIS_* pointing at Redis. Anything already in an existing .env is kept.',
+            'The site is served from the project folder itself, which is where Rhapsody’s index.php lives, so the public folder stays blank.')),
+        sec('Setup options',
+          h('p', {}, 'The New Rhapsody site window has an optional Set up list. The ticked items run once the project exists. If one fails the others still run and you are told which.'),
+          ul('Authentication tables (auth:install).', 'Job queue tables, with the migration (queue:install --migrate).', 'React and Vite (react:install). You still run npm install yourself.',
+            'Pre-build service proxies (build:proxies). On by default, so the first page load is not the one that generates them.', 'Warm the template cache (app:cache-warm).')),
+        sec('The Commands button',
+          h('p', {}, 'Every Rhapsody site on the Sites page has a Commands button. One click runs php rhapsody <command> in the project folder with that site’s PHP and shows the output. A site counts as Rhapsody when it has the rhapsody launcher and vendor/arout/rhapsody-core.'),
+          h('dl', { class: 'defs' }, cmdGroups.flatMap(([a, b]) => [h('dt', {}, a), h('dd', {}, b)])),
+          h('p', { class: 'muted small' }, 'Commands that stop to ask for confirmation, such as queue:flush and module:uninstall, are not offered here; run them in a terminal. Rhapsody reports success even when a command fails, so the result shown is judged from the output as well as the exit code.')),
+        sec('Template hints',
+          h('p', {}, 'Outline every template and block on a page and see which file produced it. Switch it on per site under Profiler → Tools. ', helpLink('debug', 'How to use it'), '.'),
+          h('p', { class: 'muted small' }, 'It needs the template hints extension from the framework, and the app running in development mode. Rhapsody’s own documentation covers that side under Debugging.')),
+        sec('Keeping the framework up to date',
+          h('p', {}, 'The Sites page lists Rhapsody sites on their own, with the installed arout/rhapsody-core version and whether a newer release is out. It checks Packagist when you open the page, and Check for updates asks again.'),
+          h('p', {}, 'Update to… runs composer update arout/rhapsody-core in the project, with that site’s PHP. How far it can move is decided by the project’s own composer.json: if that file asks for ^1.4, Composer will not jump to 2.0, and you are told so. Commit or back up first; Composer may also update the packages the framework depends on.')),
+        sec('Handy defaults for Rhapsody sites',
+          ul('Mail sent by the app lands in Mail inbox, so you can test password resets and notifications without sending anything real.',
+            'Redis is available at 127.0.0.1 for caches and queues once you start it on Services.',
+            'Both web servers refuse to serve dot-files such as .env and .git, so keeping the project folder as the web root is safe.'))];
+      case 'sites': return [
+        sec('Adding sites',
+          ul([h('strong', {}, 'New Rhapsody site'), ' makes a project from scratch. See ', helpLink('rhapsody', 'Rhapsody framework'), '.'],
+            [h('strong', {}, 'Add existing folder'), ' serves a project you already have. Use Browse… to pick it. It stays exactly where it is.'],
+            [h('strong', {}, 'Remove'), ' stops serving a site. It never deletes the folder or its database.'])),
+        sec('Rhapsody sites and other sites',
+          h('p', {}, 'The Sites page keeps Rhapsody projects in their own list, with a Framework column and a Commands button. Everything else is under Other sites.')),
+        sec('The public folder',
+          h('p', {}, 'Left blank, the project folder itself is served. That is right for Rhapsody and anything else with index.php in the root. For a project that serves from a sub-folder, such as Laravel’s public, type its name. What you type is what is served, and a folder that does not exist is refused.')),
+        sec('PHP version per site',
+          h('p', {}, 'Each site has its own PHP version, chosen in the PHP column. Install more versions on Versions. PHP workers start and stop with the web server.')),
+        sec('Addresses, HTTPS and the hosts file',
+          h('p', {}, `Every site is reachable at https://<name>.${st.tld} with a trusted certificate made for it. For that address to open, your Windows hosts file needs a line for each site. If Rhapsody Server cannot edit it yet, a banner offers Grant access; it asks Windows once.`))];
+      case 'stack': return [
+        sec('Services',
+          h('p', {}, 'Services lists the web server, MariaDB, Redis and Mailpit, each with a switch and a Logs link. Start all and Stop all do the lot. PHP workers are automatic: they start and stop with the web server.'),
+          ul([h('strong', {}, 'Web server.'), ' Choose nginx or Apache. Only one can use ports 80 and 443; switching restarts your running sites, and Apache installs itself the first time you pick it.'],
+            [h('strong', {}, 'MariaDB.'), ' Local only, with root and no password. Each series has its own data folder, in the data folder under mariadb. phpMyAdmin logs in for you.'],
+            [h('strong', {}, 'Mailpit.'), ' Catches mail on port 1025. PHP’s mail() is already pointed at it. Read it under Mail inbox.'],
+            [h('strong', {}, 'Redis.'), ' A cache and queue server for your apps.'])),
+        sec('Versions',
+          h('p', {}, 'One dropdown per tool: PHP, the web servers, MariaDB and others. Install a version, make it the default, update it or remove it. Apache can also be updated, or imported from a zip you downloaded. Programs that come with the app install without downloading anything.')),
+        sec('Modules',
+          h('p', {}, 'Modules lists PHP extensions per PHP version and the Apache modules. Tick or untick, then Apply: the config is rewritten and only what needs it restarts. A few are locked on because Composer, phpMyAdmin or the generated config need them.')),
+        sec('php.ini',
+          h('p', {}, 'Each PHP version shows the php.ini it loads: Edit php.ini, Show in folder, Copy path, and Restart PHP while its workers run. The file is generated, but everything you write below the “Your settings” line at the bottom is kept whenever Rhapsody Server rewrites it.'))];
+      case 'debug': return [
+        sec('Logs',
+          h('p', {}, 'Logs shows the web server, PHP and service logs. Pick a log, search it (as plain text or a regular expression), keep it live, or reverse the order. With AI help on, Explain this turns a log into plain language.')),
+        sec('The profiler',
+          h('p', {}, 'Turn on Profiling on the Profiler page and every page or API call through your sites is recorded, with the SQL it ran. Open a request to see its timings and queries. Everything stays on this computer and the latest few hundred requests are kept in memory.')),
+        sec('Optional extras (Profiler → Tools)',
+          ul([h('strong', {}, 'Request details.'), ' PHP time, peak memory and files loaded for each request, and a Server-Timing header visible in your browser’s dev tools.'],
+            [h('strong', {}, 'Browser timings.'), ' A small script added to your HTML pages reports TTFB, FCP, LCP, layout shift and load time. It never goes into API responses or downloads.'],
+            [h('strong', {}, 'Xdebug profiler.'), ' Switch it on per PHP version, then press Profile with Xdebug on a request to see the costliest functions. Files open in QCacheGrind, PhpStorm or webgrind.'],
+            [h('strong', {}, 'Lighthouse.'), ' Scores for one of your sites. It needs Node.js and Chrome, Edge or Brave on this PC. Reports are saved as HTML.'])),
+        sec('Template hints',
+          h('p', {}, 'Template hints show which template file produced each part of a page. Every template gets a dashed border and a label with its file path and render time; click a label to copy the path.'),
+          ol('Open Profiler, then the Tools tab.', 'Make sure profiling and Browser timings are both on. The overlay is loaded by the browser timings script.',
+            'Under Template hints, switch on the site you want. Tick Also mark blocks to outline Twig blocks as well as whole templates.',
+            'Reload the page. There is no restart. The small panel in the corner turns the outlines off and on, or hides the blocks.'),
+          q('Nothing shows up', 'The Rhapsody app has to be running in development mode (APP_ENV=development in its .env file), and it needs the template hints extension from the framework. Open the page’s source and look for comments that start with rs:tpl. If they are missing, the framework is not producing them. If they are there but nothing is drawn, check that browser timings are on.'),
+          q('Is it safe to leave on?', 'It only works while the app is in development mode, so it cannot show up on a live site. It never marks emails, text, JSON, CSS or script templates, and never touches responses that are not HTML pages.'))];
+      case 'ai': return [
+        sec('What it does',
+          ul([h('strong', {}, 'Explain this.'), ' On a failed operation or in a log: a plain-language diagnosis with fix steps.'],
+            [h('strong', {}, 'Inspect this request.'), ' On a request in the Profiler: where the time went, repeated queries (N+1), slow statements, large responses. SQL is sent as its shape, never with row data.'],
+            [h('strong', {}, 'Ask AI.'), ' Type a question such as why a page is slow or why you get a 500. It investigates with read-only tools and lists every lookup it made. It only reads: it cannot change files, run SQL or restart anything.'])),
+        sec('Setting it up',
+          h('p', {}, 'AI help is off until you set it up on the ', h('a', { href: '#/ai' }, 'AI help'), ' page. Bring your own key for Groq, Google Gemini, OpenRouter or Mistral, run Ollama on this computer so nothing leaves it, or use any OpenAI-compatible service. You can add a backup provider for when the main one is rate-limited.'),
+          h('p', { class: 'muted small' }, 'Keys are stored encrypted for your Windows account. Passwords, tokens and secrets are removed before anything is sent.'))];
+      case 'app': return [
+        sec('The tray menu',
+          h('p', {}, 'The tray icon is always there while the app runs. Its menu has Open dashboard, Start all and Stop all, one entry per service (the icon shows its state: running, starting, stopped or crashed; click to start or stop), a Sites list that opens a site, Open sites folder, Edit php.ini, Help and Quit. The menu follows the Windows light or dark setting.')),
+        sec('Appearance',
+          h('p', {}, 'The Theme switch at the bottom of the sidebar picks Light, Dark or Auto, which follows your system.')),
+        sec('Keeping the dashboard private',
+          h('p', {}, 'The dashboard only answers on this computer, and every request needs a key made for this installation. Other web pages cannot talk to it. If the app is quit, the page cannot connect until you start it again.'))];
+      case 'files': return [
+        sec('Where your code is stored',
           h('p', {}, 'Every site is an ordinary folder on this computer. Rhapsody Server only serves it: your code, your Git history and your files all live in the folder itself, so you can open it in your editor or Git tool like any other project.'),
           pathRow('New sites are created in', st.sitesRoot, 'sites'),
           h('p', { class: 'muted small' }, 'A site you added from an existing folder stays exactly where it already is.'),
           S.sites.length
             ? h('div', { class: 'hp' }, S.sites.map(x => pathRow(x.domain, x.root, 'site', x.name)))
             : h('p', { class: 'muted' }, 'No sites yet. Once you create one, its folder is listed here.')),
-        h('section', {},
-          h('h2', {}, 'Rhapsody Server’s own files'),
+        sec('Rhapsody Server’s own files',
           st.dataRoot ? pathRow('App data', st.dataRoot, 'data') : null,
           h('p', { class: 'muted small' }, 'Settings, certificates, downloaded programs, and your databases (in data' + sep + 'mariadb). You normally never need to open this. Removing a site does not delete its folder or its database.'),
           st.logsDir ? pathRow('Logs', st.logsDir, 'logs') : null,
-          h('p', { class: 'muted small' }, 'One log file per service. The Logs button on the Services page shows the same thing.')),
-        h('section', {},
-          h('h2', {}, 'Getting started'),
-          h('ol', {},
-            h('li', {}, 'On Services, make sure the web server is running. Start MariaDB too if your site uses a database.'),
-            h('li', {}, 'On Sites, choose New Rhapsody site and give it a name, such as my-app.'),
-            h('li', {}, `Open it from the Sites list at https://my-app.${st.tld}. If a banner mentions the hosts file, choose Grant access so .${st.tld} addresses open.`),
-            h('li', {}, 'phpMyAdmin (databases) and Mail inbox (mail your site sends) are in the sidebar.'))),
-        h('section', {},
-          h('h2', {}, 'If something goes wrong'),
+          h('p', { class: 'muted small' }, 'One log file per service. The Logs button on the Services page shows the same thing.'))];
+      case 'trouble': return [
+        sec('Common problems',
           q(`A .${st.tld} address doesn’t open`, 'Check that the web server is running on Services, and that no banner is asking you to grant hosts-file access.'),
           q('A page says a PHP extension is missing', 'Open Modules, pick the PHP version your site uses, switch the extension on, and restart if it asks you to.'),
           q('A site needs a different PHP version', 'Change it in the PHP column on Sites. To get more versions, use Versions.'),
           q('A service won’t start', 'Open Services and press Logs on it to see why. With AI help turned on, Explain this log turns that into plain language.'),
-          h('p', {}, 'Want plain-language explanations of errors? ', h('a', { href: '#/ai' }, 'Set up AI help'), '.'))));
+          q('New Rhapsody site refuses my PHP version', `Rhapsody needs PHP ${st.minRhapsodyPhp || '8.4.1'} or newer. Update PHP on Versions, or pick a newer version in the window.`),
+          q('A Rhapsody command says it needs the database', 'Start MariaDB on Services and run it again. migrate, auth:install, queue:install and the queue commands all use it.'),
+          q('The Commands button is missing', 'It only appears on Rhapsody sites: the folder needs the rhapsody launcher and vendor/arout/rhapsody-core. Run composer install if vendor is missing.'),
+          q('The dashboard won’t load', 'The app has probably been quit. Start Rhapsody Server again, or open rhapsody://open.')),
+        h('p', {}, 'Want plain-language explanations of errors? ', h('a', { href: '#/ai' }, 'Set up AI help'), '.')];
+    }
+    return [];
   }
 
   // ---- profiler
@@ -1646,7 +2044,13 @@ button.log-row:hover { background: var(--hover); }
     $('#fRhapsody button[value=create]').disabled = !pick;
   }
   $('#rhPhp').addEventListener('change', fillRhapsodyPhp);
-  function openRhapsody() { fillRhapsodyPhp(); updateWhere(); $('#dlgRhapsody').showModal(); }
+  function fillRhapsodySteps() {
+    const steps = (S && S.rhapsodyTools && S.rhapsodyTools.scaffoldSteps) || [];
+    $('#rhStepsBox').hidden = !steps.length;
+    $('#rhSteps').replaceChildren(...steps.map(x => h('label', { class: 'stepopt' },
+      h('input', { type: 'checkbox', name: 'step', value: x.id, checked: x.default }), h('span', {}, x.label), h('span', { class: 'hint' }, x.description))));
+  }
+  function openRhapsody() { fillRhapsodyPhp(); fillRhapsodySteps(); updateWhere(); $('#dlgRhapsody').showModal(); }
   $('#fRhapsody [name=name]').addEventListener('input', updateWhere);
   $('#fRhapsody').addEventListener('reset', () => setTimeout(updateWhere));
 
@@ -1674,7 +2078,8 @@ button.log-row:hover { background: var(--hover); }
   wire('#fRhapsody', '#dlgRhapsody', f => act(async () => {
     await api('POST', '/api/sites/scaffold', {
       name: f.get('name'), php: f.get('php'),
-      dbName: (f.get('dbName') || '').trim() || null, dbUser: (f.get('dbUser') || '').trim() || null, dbPass: f.get('dbPass') || null });
+      dbName: (f.get('dbName') || '').trim() || null, dbUser: (f.get('dbUser') || '').trim() || null, dbPass: f.get('dbPass') || null,
+      steps: $('#rhStepsBox').hidden ? null : f.getAll('step') });
     created = { name: f.get('name') };   // a notice tells them where the code went, with an Open folder button
   }));
   wire('#fExisting', '#dlgExisting', f => act(() => api('POST', '/api/sites', {

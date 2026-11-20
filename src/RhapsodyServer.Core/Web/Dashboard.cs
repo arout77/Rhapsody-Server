@@ -1,19 +1,31 @@
 namespace RhapsodyServer.Core.Web;
 
 public sealed record ServiceDto(string Id, string Name, string State, int? Port, bool Toggleable, string Detail);
-public sealed record SiteDto(string Name, string Domain, string Url, string Root, string PublicDir, string Php, bool Https);
+public sealed record SiteDto(string Name, string Domain, string Url, string Root, string PublicDir, string Php, bool Https, bool Rhapsody = false, string? CoreVersion = null);
 public sealed record SettingsDto(string Tld, string WebServer, string DefaultPhp, string[] PhpBranches,
     int HttpPort, int HttpsPort, int MariaDbPort, int RedisPort, int SmtpPort, int MailUiPort, string SitesRoot,
     string DataRoot = "", string LogsDir = "",
     Dictionary<string, string>? PhpVersions = null, string MinRhapsodyPhp = "");
 public sealed record DashboardState(ServiceDto[] Services, SiteDto[] Sites, SettingsDto Settings, bool HostsWritable, bool Windows, bool CanPickFolder = false,
-    bool CanOpenFolder = false);
+    bool CanOpenFolder = false, RhapsodyToolsDto? RhapsodyTools = null);
+
+/// <summary>What the page offers for Rhapsody sites: setup options for a new site, and the command buttons for an existing one.</summary>
+public sealed record RhapsodyToolsDto(ScaffoldStepDto[] ScaffoldSteps, CommandGroupDto[] Groups);
+public sealed record ScaffoldStepDto(string Id, string Label, string Description, bool Default);
+public sealed record CommandGroupDto(string Title, CommandDto[] Commands);
+public sealed record CommandDto(string Id, string Label, string Description, bool NeedsName, string NameHint);
+/// <param name="Command">An id from the list the page was given. The page never sends a command line.</param>
+/// <param name="Name">For the Generate group: the class or file name.</param>
+public sealed record RhapsodyCommandRequest(string Command, string? Name);
+/// <param name="Command">The command line that ran, for the top of the output.</param>
+public sealed record RhapsodyCommandResultDto(bool Ok, string Command, string Output);
 /// <param name="UpdateTo">A newer build of this installed series that the vendor offers (apache and nginx only), else null.</param>
 public sealed record VersionDto(string Series, string Version, bool Installed, bool Bundled, bool Available, bool Active, bool Removable, string? UpdateTo = null);
 public sealed record ComponentDto(string Id, string Name, string Note, bool Offline, VersionDto[] Versions);
 
 public sealed record SiteRequest(string Name, string Root, string? PublicDir, string Php, bool? Https);
-public sealed record ScaffoldRequestDto(string Name, string Php, string? DbName = null, string? DbUser = null, string? DbPass = null);
+/// <param name="Steps">Setup options to run after creating it (ids from <see cref="RhapsodyToolsDto"/>). Null = the defaults; empty = none.</param>
+public sealed record ScaffoldRequestDto(string Name, string Php, string? DbName = null, string? DbUser = null, string? DbPass = null, string[]? Steps = null);
 public sealed record PhpRequest(string Php);
 public sealed record WebServerRequest(string Kind);
 
@@ -162,6 +174,18 @@ public interface IDashboardBackend
 
     /// <summary>Asks the running web server for the site's home page and gathers what the server and PHP logged, as plain text for the person (or a bug report).</summary>
     Task<string> CheckSiteAsync(string name, CancellationToken ct);
+
+    /// <summary>Installed and newest rhapsody-core for a Rhapsody site. A network problem is reported in the result, not thrown.</summary>
+    Task<CoreUpdateInfo> CheckRhapsodyUpdateAsync(string site, bool force, CancellationToken ct) =>
+        throw new NotSupportedException("Update checks aren't available here.");
+
+    /// <summary>Runs <c>composer update arout/rhapsody-core</c> in a Rhapsody site's folder.</summary>
+    Task UpdateRhapsodyAsync(string site, IProgress<string> p, CancellationToken ct) =>
+        throw new NotSupportedException("Updates aren't available here.");
+
+    /// <summary>Runs one framework command (<c>php rhapsody ...</c>) in a Rhapsody site's folder. Throws ArgumentException for an unknown site, command or name.</summary>
+    Task<RhapsodyCommandResultDto> RunRhapsodyCommandAsync(string site, RhapsodyCommandRequest req, CancellationToken ct) =>
+        throw new NotSupportedException("Rhapsody commands aren't available here.");
 
     // ---- optional AI helper ("Explain this"). Not operations: they don't take the busy lock.
     AiConfigDto GetAi();
