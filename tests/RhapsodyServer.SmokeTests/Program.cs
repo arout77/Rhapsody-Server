@@ -2158,6 +2158,17 @@ await Check("rhapsody updates: versions are read from vendor and Packagist's met
     True(!RhapsodyUpdates.Evaluate("dev-main", "1.10.0", null).UpdateAvailable);
     True(RhapsodyUpdates.Evaluate(null, "1.10.0", null).Error != null);
     True(RhapsodyUpdates.Evaluate("1.0.0", null, null).Error != null);
+    // The site's composer.json constraint decides what counts as "latest"; a newer line it blocks is reported separately.
+    Eq("1.9.3", RhapsodyUpdates.PickLatestStable("{\"packages\":{\"arout/rhapsody-core\":[{\"version\":\"2.0.0\"},{\"version\":\"1.9.3\"},{\"version\":\"1.10.0\"}]}}", "^1.0 <1.10"));
+    Eq("1.10.0", RhapsodyUpdates.PickLatestStable(meta, "^1.0.9"));
+    Eq("1.10.0", RhapsodyUpdates.PickLatestStable(meta, "dev-main"));   // a constraint we don't understand hides nothing
+    True(RhapsodyUpdates.Allows("^1.0.9", "1.0.9") && !RhapsodyUpdates.Allows("^1.0.9", "1.0.8") && !RhapsodyUpdates.Allows("^1.0.9", "2.0.0"));
+    True(RhapsodyUpdates.Allows("~1.2", "1.9.0") && !RhapsodyUpdates.Allows("~1.2.3", "1.3.0") && RhapsodyUpdates.Allows("~1.2.3", "1.2.9"));
+    True(RhapsodyUpdates.Allows("1.*", "1.4.0") && !RhapsodyUpdates.Allows("1.*", "2.0.0") && RhapsodyUpdates.Allows("^1.0 || ^2.0", "2.1.0") && RhapsodyUpdates.Allows("^0.3", "0.3.9") && !RhapsodyUpdates.Allows("^0.3", "0.4.0"));
+    var held = RhapsodyUpdates.Evaluate("1.0.9", "1.0.9", "^1.0.9", "2.0.0");
+    True(!held.UpdateAvailable); Eq("2.0.0", held.Newer);
+    True(RhapsodyUpdates.Evaluate("1.0.8", "1.0.9", "^1.0", "2.0.0").UpdateAvailable);
+    Eq<string?>(null, RhapsodyUpdates.Evaluate("1.0.9", "1.0.9", "^1.0.9", "1.0.9").Newer);
 });
 await Check("rhapsody updates API: needs the token; check and update reach the backend for a known site; unknown site is a readable 400", async () =>
 {

@@ -951,9 +951,13 @@ button.log-row:hover { background: var(--hover); }
       : info && info.error ? h('span', { class: 'muted small', title: info.error }, info.error)
       : info && info.updateAvailable ? h('span', { class: 'pill update' }, h('span', { class: 'dot' }), 'Update available: ' + info.latest)
       : info ? h('span', { class: 'pill uptodate' }, h('span', { class: 'dot' }), 'Up to date') : null;
+    const held = info && !info.error && info.newer
+      ? h('div', { class: 'muted small', title: 'This project\u2019s composer.json asks for ' + (info.constraint || 'an older line') + ', so Composer won\u2019t move past it. Change that line to allow ' + info.newer + ' when you\u2019re ready.' },
+          info.newer + ' is out, but composer.json keeps this site on ' + (info.constraint || 'an older release')) : null;
     return h('div', { class: 'fwcell' },
       h('div', {}, h('span', { class: 'mono' }, 'rhapsody-core ' + (have || '?'))),
       status,
+      held,
       h('div', { class: 'fwbtns' },
         info && info.updateAvailable ? h('button', { class: 'btn sm primary', type: 'button', disabled: busy(), onclick: () => updateRhapsody(site, info.latest) }, 'Update to ' + info.latest) : null,
         h('button', { class: 'btn sm quiet', type: 'button', disabled: !!u.checking, onclick: () => checkUpdate(site, true) }, 'Check for updates')));
